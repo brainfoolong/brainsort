@@ -1,0 +1,41 @@
+# The timing run of one Windows machine: every algorithm on every key type,
+# dataset and size, then the public-API benchmark. Writes results\<id>.csv,
+# results\<id>.meta.json and results\<id>.api.md; scripts\website.py turns every
+# such set in results\ into the website.
+#
+#   .\scripts\bench.ps1 [sortbench options]      e.g. --reps 11
+#
+# Environment (same names as bench.sh): BENCH_ID, BENCH_HOST, BENCH_SIZES,
+# BENCH_API_MAX_N, BUILD_DIR (default build-win, built first; a multi-config
+# build such as MSVC keeps its binaries in <BUILD_DIR>\Release), BENCH_NO_SITE.
+$ErrorActionPreference = "Stop"
+Set-Location (Join-Path $PSScriptRoot "..")
+$buildDir = if ($env:BUILD_DIR) { $env:BUILD_DIR } else { "build-win" }
+& (Join-Path $PSScriptRoot "build-windows.ps1")
+if ($LASTEXITCODE -ne 0) { throw "build failed" }
+$bin = if (Test-Path (Join-Path $buildDir "sortbench.exe")) { $buildDir } else { Join-Path $buildDir "Release" }
+$sb  = Join-Path $bin "sortbench.exe"
+$api = Join-Path $bin "brainsort_api_bench.exe"
+$id = if ($env:BENCH_ID) { $env:BENCH_ID } else { (& $sb --print-id).Trim() }
+$sizes = @()
+foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "1000 10000 100000 1000000" }) -split " ")) { $sizes += @("--n", $n) }
+$hostText = if ($env:BENCH_HOST) { $env:BENCH_HOST } else { "" }
+$apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "10000000" }
+New-Item -ItemType Directory -Force results | Out-Null
+
+Write-Host "== timing: results\$id.csv"
+& $sb --all-types --all-algos --all-datasets --timing-only @sizes --id $id --host $hostText --csv "results\$id.csv" @args
+if ($LASTEXITCODE -ne 0) { throw "benchmark failed" }
+
+Write-Host "== public API: results\$id.api.md"
+& $api --max-n $apiMax --host $hostText | Out-File -Encoding utf8 "results\$id.api.md"
+if ($LASTEXITCODE -ne 0) { throw "API benchmark failed" }
+
+if (-not $env:BENCH_NO_SITE) {
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        & python scripts\website.py
+        if ($LASTEXITCODE -ne 0) { throw "website build failed" }
+    } else {
+        Write-Host "python not found; run scripts\website.py later to build the website"
+    }
+}

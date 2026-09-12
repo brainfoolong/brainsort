@@ -1,0 +1,9 @@
+build/
+build-*/
+site/
+results/counts-*.csv
+__pycache__/
+sortbench_tmp_out.txt
+*.o
+*.obj
+*.exe
