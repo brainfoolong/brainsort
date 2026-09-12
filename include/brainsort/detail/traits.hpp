@@ -67,9 +67,101 @@ struct NoHooks {
 };
 
 // ---- allocation ------------------------------------------------------------------
+// A sort allocates a few large blocks (the records, the scratch buffer, the
+// permutation buffer) and frees them at the end. Fresh pages from the system
+// are the most expensive part of sorting a hundred thousand elements: every
+// page is faulted in on first touch, which costs as much as the sorting
+// itself. So each thread keeps the largest blocks its sorts have freed, up
+// to BRAINSORT_MEMORY_CACHE bytes in total (default 32 MiB, 0 disables the
+// cache), and the next sort on that thread takes them back warm. The cache
+// is per thread, so there is no shared state; it is released when the thread
+// ends, or by brainsort::release_memory().
+#ifndef BRAINSORT_MEMORY_CACHE
+#define BRAINSORT_MEMORY_CACHE (size_t(32) << 20)
+#endif
+
+class MemoryCache {
+public:
+    static constexpr size_t kMinBlock = size_t(64) << 10;   // smaller blocks go to the heap directly
+    static constexpr int    kFree     = 4;                   // cached free blocks
+    static constexpr int    kLive     = 16;                  // blocks handed out at once that the cache knows about
+
+    ~MemoryCache() { release(); }
+
+    void* allocate(size_t bytes) {
+        // Best fit among the cached blocks; a block is remembered as live so
+        // its capacity is known when it comes back.
+        int best = -1;
+        for (int i = 0; i < nfree_; ++i)
+            if (free_[i].cap >= bytes && (best < 0 || free_[i].cap < free_[best].cap)) best = i;
+        if (best >= 0 && nlive_ < kLive) {
+            const Block b = free_[best];
+            free_[best]   = free_[--nfree_];
+            cached_ -= b.cap;
+            live_[nlive_++] = b;
+            return b.p;
+        }
+        void* p = ::operator new(bytes);
+        if (nlive_ < kLive) live_[nlive_++] = Block{p, bytes};
+        return p;
+    }
+    void deallocate(void* p) noexcept {
+        int i = 0;
+        while (i < nlive_ && live_[i].p != p) ++i;
+        if (i == nlive_) { ::operator delete(p); return; }   // not tracked: a plain block
+        const Block b = live_[i];
+        live_[i]      = live_[--nlive_];
+        if (b.cap > limit_) { ::operator delete(b.p); return; }
+        // Make room: drop the smallest cached blocks while the total would exceed the limit.
+        while (nfree_ > 0 && cached_ + b.cap > limit_) drop_smallest();
+        if (nfree_ == kFree) {   // full: keep the block if it is larger than the smallest cached one
+            int s = smallest();
+            if (free_[s].cap >= b.cap) { ::operator delete(b.p); return; }
+            drop(s);
+        }
+        free_[nfree_++] = b;
+        cached_ += b.cap;
+    }
+    void release() noexcept {
+        while (nfree_ > 0) drop(nfree_ - 1);
+    }
+
+private:
+    struct Block { void* p; size_t cap; };
+    int smallest() const noexcept {
+        int s = 0;
+        for (int i = 1; i < nfree_; ++i) if (free_[i].cap < free_[s].cap) s = i;
+        return s;
+    }
+    void drop(int i) noexcept {
+        cached_ -= free_[i].cap;
+        ::operator delete(free_[i].p);
+        free_[i] = free_[--nfree_];
+    }
+    void drop_smallest() noexcept { drop(smallest()); }
+
+    Block  free_[kFree] = {};
+    Block  live_[kLive] = {};
+    int    nfree_       = 0;
+    int    nlive_       = 0;
+    size_t cached_      = 0;
+    size_t limit_       = BRAINSORT_MEMORY_CACHE;
+};
+
+inline MemoryCache& memory_cache() {
+    thread_local MemoryCache cache;
+    return cache;
+}
+
 struct DefaultAlloc {
-    static void* allocate(size_t bytes) { return ::operator new(bytes ? bytes : 1); }
-    static void  deallocate(void* p, size_t) noexcept { ::operator delete(p); }
+    static void* allocate(size_t bytes) {
+        if (bytes < MemoryCache::kMinBlock || BRAINSORT_MEMORY_CACHE == 0) return ::operator new(bytes ? bytes : 1);
+        return memory_cache().allocate(bytes);
+    }
+    static void deallocate(void* p, size_t bytes) noexcept {
+        if (bytes < MemoryCache::kMinBlock || BRAINSORT_MEMORY_CACHE == 0) { ::operator delete(p); return; }
+        memory_cache().deallocate(p);
+    }
 };
 
 // ---- the array view of the library ------------------------------------------------

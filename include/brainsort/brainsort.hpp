@@ -342,6 +342,11 @@ inline void sort(R&& r, F f) {
     sort(std::ranges::begin(r), std::ranges::end(r), std::move(f));
 }
 
+// Free the memory this thread's sorts keep for reuse (see
+// BRAINSORT_MEMORY_CACHE in detail/traits.hpp). Never needed for
+// correctness; the memory is released when the thread ends.
+inline void release_memory() noexcept { detail::memory_cache().release(); }
+
 // The same names as the standard library, for a drop-in replacement: every
 // brainsort sort is stable.
 template <std::random_access_iterator It>
