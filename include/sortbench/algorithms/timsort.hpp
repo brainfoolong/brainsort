@@ -63,11 +63,17 @@ template <class A>
 inline idx count_run_and_make_ascending(A a, idx lo, idx hi) {
     idx run_hi = lo + 1;
     if (run_hi == hi) return 1;
-    if (a.less(a.get(run_hi), a.get(lo))) {
-        while (run_hi < hi && a.less(a.get(run_hi), a.get(run_hi - 1))) ++run_hi;
+    // a[i] < a[i-1]. Function arguments are unsequenced: read in one fixed
+    // order so the trace hash is the same on every compiler.
+    auto descending_at = [&](idx i) {
+        const typename A::value_type cur = a.get(i), prev = a.get(i - 1);
+        return a.less(cur, prev);
+    };
+    if (descending_at(run_hi)) {
+        while (run_hi < hi && descending_at(run_hi)) ++run_hi;
         reverse_range(a, static_cast<size_t>(lo), static_cast<size_t>(run_hi));
     } else {
-        while (run_hi < hi && !a.less(a.get(run_hi), a.get(run_hi - 1))) ++run_hi;
+        while (run_hi < hi && !descending_at(run_hi)) ++run_hi;
     }
     return run_hi - lo;
 }
@@ -320,7 +326,8 @@ private:
             // Straightforward one-at-a-time merge until one run is winning
             // consistently.
             do {
-                if (a.less(a.get(cursor2), tmp.get(cursor1))) {
+                const typename A::value_type c2 = a.get(cursor2), c1 = tmp.get(cursor1);   // one read order on every compiler
+                if (a.less(c2, c1)) {
                     a.set(dest++, a.get(cursor2++));
                     ++count2;
                     count1 = 0;
@@ -410,7 +417,8 @@ private:
             idx count2 = 0;
 
             do {
-                if (a.less(tmp.get(cursor2), a.get(cursor1))) {
+                const typename A::value_type c2 = tmp.get(cursor2), c1 = a.get(cursor1);   // one read order on every compiler
+                if (a.less(c2, c1)) {
                     a.set(dest--, a.get(cursor1--));
                     ++count1;
                     count2 = 0;

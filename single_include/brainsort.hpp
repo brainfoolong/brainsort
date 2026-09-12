@@ -684,6 +684,23 @@ template <class A> struct ShiftKey {         // contiguous varying-bit range, sh
     K operator()(T x) const { return A::key(x, chunk) >> low; }
     K raw(K k) const { return k >> low; }
 };
+// Portable PEXT: the bits of k that `mask` selects, compressed to the bottom,
+// one step per mask bit. The counted path uses it on every CPU so the numbers
+// it records do not depend on BMI2; the timed path uses the instruction.
+template <class K> inline K pext_soft(K k, K mask) noexcept {
+    K out = 0, bit = 1;
+    for (K m = mask; m != 0; m &= m - 1, bit <<= 1)
+        if (k & (m & (~m + 1))) out |= bit;
+    return out;
+}
+template <class A> struct PextKeySoft {      // only the varying bits, compressed to the bottom (portable)
+    using T = typename A::value_type;
+    using K = typename A::key_type;
+    int chunk;
+    K   mask;
+    K operator()(T x) const { return raw(A::key(x, chunk)); }
+    K raw(K k) const { return pext_soft(k, mask); }
+};
 #ifdef BRAINSORT_X86_64
 template <class A> struct PextKey {          // only the varying bits, compressed to the bottom (BMI2)
     using T = typename A::value_type;
@@ -1542,9 +1559,15 @@ inline bool sort_displaced(A a, size_t n) {
                 size_t i = lo, j = mid, o = lo;
                 while (i < mid && j < hi) {
                     const uint32_t pi = idx.get(src + i), pj = idx.get(src + j);
-                    const int c = a.compare(disp.elem(pj), disp.elem(pi));
-                    if (c < 0 || (c == 0 && disp.pos(pj) < disp.pos(pi))) { idx.set(dst + o++, pj); ++j; }
-                    else                                                    { idx.set(dst + o++, pi); ++i; }
+                    // Reads in one fixed order (function arguments and the
+                    // operands of < are unsequenced): the counted numbers are
+                    // then the same on every compiler.
+                    const T   ei = disp.elem(pi), ej = disp.elem(pj);
+                    const int c  = a.compare(ej, ei);
+                    bool take_j = c < 0;
+                    if (c == 0) { const uint32_t qi = disp.pos(pi), qj = disp.pos(pj); take_j = qj < qi; }
+                    if (take_j) { idx.set(dst + o++, pj); ++j; }
+                    else        { idx.set(dst + o++, pi); ++i; }
                 }
                 while (i < mid) idx.set(dst + o++, idx.get(src + i++));
                 while (j < hi)  idx.set(dst + o++, idx.get(src + j++));
@@ -1691,7 +1714,10 @@ inline typename A::value_type pick_pivot(A a, size_t n, int chunk, Pivot& info) 
     info.all_equal   = m == 0;
     info.smin        = lo;
     info.smax        = hi;
-    auto by_key = [chunk](T x, T y) { return A::key(x, chunk) < A::key(y, chunk); };
+    // The two key extractions are read in one fixed order (the operands of <
+    // are unsequenced), so the key bytes a counted run tallies are the same
+    // on every compiler.
+    auto by_key = [chunk](T x, T y) { const uint64_t kx = A::key(x, chunk), ky = A::key(y, chunk); return kx < ky; };
     std::nth_element(smp, smp + k / 2, smp + k, by_key);
     const T        pivot = smp[k / 2];
     const uint64_t pk    = A::key(pivot, chunk);
@@ -2000,7 +2026,8 @@ constexpr int kSplitMinPasses = 3;
 // against every key. The key functions:
 //   full   the raw radix key;
 //   shift  the contiguous varying-bit range, shifted down;
-//   pext   only the varying bits, compressed with BMI2 PEXT;
+//   pext   only the varying bits, compressed with BMI2 PEXT (a portable
+//          PEXT on the counted path, so the counts are the same on every CPU);
 //   sub    key minus a base below the sampled minimum, for keys whose range
 //          is narrow but straddles a power of two (a sign change, say), where
 //          the XOR mask sees every bit varying.
@@ -2024,9 +2051,11 @@ struct RadixPlan {
 // exact over speculative. The sampled range is widened by
 // itself on both sides, so an unsampled key outside it is rare; if one turns
 // up anyway the histogram pass catches it and the exact plan takes over.
+// `allow_pext`: the CPU has BMI2, or the run is counted (the counted path
+// runs a portable PEXT so its numbers are the same on every CPU).
 template <class K>
 inline RadixPlan choose_plan(uint64_t est64, bool mask_exact, bool have_range, uint64_t rmin, uint64_t rmax,
-                             size_t m, int max_digit, int force_width) {
+                             size_t m, int max_digit, int force_width, bool allow_pext) {
     constexpr int kb  = key_bits<K>();
     const K       est = static_cast<K>(est64);
     RadixPlan best;
@@ -2054,13 +2083,11 @@ inline RadixPlan choose_plan(uint64_t est64, bool mask_exact, bool have_range, u
         p.kind = RadixPlan::shift; p.bits = high - low + 1; p.low = low; p.exact = mask_exact;
         p.assumed = p.bits >= kb ? ~uint64_t(0) : (((uint64_t(1) << p.bits) - 1) << low);
         consider(p);
-#ifdef BRAINSORT_X86_64
-        if (have_bmi2()) {
+        if (allow_pext) {
             RadixPlan q;
             q.kind = RadixPlan::pext; q.bits = popcount(est); q.pmask = est; q.assumed = est; q.exact = mask_exact;
             consider(q);
         }
-#endif
     }
     if (have_range && rmax > rmin) {
         const K lo = static_cast<K>(rmin), hi = static_cast<K>(rmax), r = hi - lo;
@@ -2174,10 +2201,16 @@ inline bool radix_run(A src, A dst, size_t n, int chunk, const RadixPlan& P, uin
     switch (P.kind) {
         case RadixPlan::shift:
             return radix_exec(src, dst, n, chunk, P, ShiftKey<A>{chunk, P.low}, P.exact ? (est >> P.low) : all, result_in_src, hs, xm_out);
+        case RadixPlan::pext: {
+            const uint64_t dm = P.exact && P.bits < kb ? (uint64_t(1) << P.bits) - 1 : all;
+            // The counted path runs the portable PEXT on every CPU so its
+            // numbers do not depend on BMI2; the timed path only gets here
+            // when the CPU has it.
 #ifdef BRAINSORT_X86_64
-        case RadixPlan::pext:
-            return radix_exec_pext(src, dst, n, chunk, P, P.exact && P.bits < kb ? (uint64_t(1) << P.bits) - 1 : all, result_in_src, hs, xm_out);
+            if constexpr (!A::counted) return radix_exec_pext(src, dst, n, chunk, P, dm, result_in_src, hs, xm_out);
 #endif
+            return radix_exec(src, dst, n, chunk, P, PextKeySoft<A>{chunk, static_cast<K>(P.pmask)}, dm, result_in_src, hs, xm_out);
+        }
         case RadixPlan::sub:
             return radix_exec(src, dst, n, chunk, P, SubKey<A>{chunk, static_cast<K>(P.base)}, all, result_in_src, hs, xm_out);
         default:
@@ -2279,7 +2312,8 @@ inline void radix_part(A src, A dst, size_t n, int chunk, S& scratch, uint64_t m
     using K = typename A::key_type;
     auto done = [&] { if (!result_in_src) copy_forward(src, 0, dst, 0, n); };
     if (n < 2) { done(); return; }
-    RadixPlan P = choose_plan<K>(mask, mask_exact, have_range, rmin, rmax, n, max_digit, DigitBits);
+    const bool allow_pext = A::counted || have_bmi2();
+    RadixPlan P = choose_plan<K>(mask, mask_exact, have_range, rmin, rmax, n, max_digit, DigitBits, allow_pext);
     if (P.bits == 0) { done(); return; }
     uint64_t xm = 0;
     if (info.dict && P.passes() >= 2) {
@@ -2289,12 +2323,12 @@ inline void radix_part(A src, A dst, size_t n, int chunk, S& scratch, uint64_t m
             return;
         }
         mask = xm; mask_exact = true;
-        P = choose_plan<K>(mask, true, false, 0, 0, n, max_digit, DigitBits);
+        P = choose_plan<K>(mask, true, false, 0, 0, n, max_digit, DigitBits, allow_pext);
         if (P.bits == 0) { done(); return; }
     }
     if (radix_run(src, dst, n, chunk, P, mask, result_in_src, scratch.hist(P.table_entries()), xm)) return;
     if constexpr (A::counted) ++A::hooks::stats().plan_retries;
-    P = choose_plan<K>(xm, true, false, 0, 0, n, max_digit, DigitBits);   // exact: cannot fail
+    P = choose_plan<K>(xm, true, false, 0, 0, n, max_digit, DigitBits, allow_pext);   // exact: cannot fail
     if (P.bits == 0) { done(); return; }
     radix_run(src, dst, n, chunk, P, xm, result_in_src, scratch.hist(P.table_entries()), xm);
 }
@@ -2638,7 +2672,8 @@ inline void radix_route(A a, S& scratch, size_t n, int& chunk, uint64_t mask, bo
     // scatters nearby keys to nearby buckets and the split would throw that
     // cache advantage away for no memory that matters.
     const bool want_split = have_pivot && scratch.capacity() < n && unordered &&
-                            choose_plan<K>(est, mask_known, have_range, info.smin, info.smax, n, kSplitMaxDigit, DigitBits).passes() >= kSplitMinPasses;
+                            choose_plan<K>(est, mask_known, have_range, info.smin, info.smax, n, kSplitMaxDigit, DigitBits,
+                                           A::counted || have_bmi2()).passes() >= kSplitMinPasses;
     if (want_split) {
         const size_t   cap = n / 2 + n / 32 + 8;   // sample error margin plus vector slack; the retry is rare
         A              buf = scratch.ensure(cap);

@@ -73,6 +73,23 @@ template <class A> struct ShiftKey {         // contiguous varying-bit range, sh
     K operator()(T x) const { return A::key(x, chunk) >> low; }
     K raw(K k) const { return k >> low; }
 };
+// Portable PEXT: the bits of k that `mask` selects, compressed to the bottom,
+// one step per mask bit. The counted path uses it on every CPU so the numbers
+// it records do not depend on BMI2; the timed path uses the instruction.
+template <class K> inline K pext_soft(K k, K mask) noexcept {
+    K out = 0, bit = 1;
+    for (K m = mask; m != 0; m &= m - 1, bit <<= 1)
+        if (k & (m & (~m + 1))) out |= bit;
+    return out;
+}
+template <class A> struct PextKeySoft {      // only the varying bits, compressed to the bottom (portable)
+    using T = typename A::value_type;
+    using K = typename A::key_type;
+    int chunk;
+    K   mask;
+    K operator()(T x) const { return raw(A::key(x, chunk)); }
+    K raw(K k) const { return pext_soft(k, mask); }
+};
 #ifdef BRAINSORT_X86_64
 template <class A> struct PextKey {          // only the varying bits, compressed to the bottom (BMI2)
     using T = typename A::value_type;

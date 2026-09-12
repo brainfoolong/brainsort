@@ -33,10 +33,14 @@ install(EXPORT brainsortTargets NAMESPACE brainsort:: DESTINATION ${CMAKE_INSTAL
 # Identical optimisation flags for every algorithm of the benchmark: -O2, no
 # -march=native unless asked (so numbers are comparable across machines).
 # brainsort dispatches AVX2/BMI2 at run time either way.
+# No fused multiply-add contraction: the benchmark's double keys come out of
+# uniform_real_distribution, and a contracted a*b+c rounds differently, so the
+# deterministic numbers would depend on the CPU (GCC contracts by default on
+# ARM64; MSVC does not contract under its default /fp:precise).
 add_library(brainsort_flags INTERFACE)
 target_compile_options(brainsort_flags INTERFACE
   $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /Zc:__cplusplus /EHsc /bigobj /utf-8>
-  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -O2>)
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -O2 -ffp-contract=off>)
 if(SORTBENCH_NATIVE AND NOT MSVC)
   target_compile_options(brainsort_flags INTERFACE -march=native)
 endif()

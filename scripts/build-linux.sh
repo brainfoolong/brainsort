@@ -12,7 +12,7 @@ if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
 else
     CXX=${CXX:-g++}
     SRC="-DSB_SOURCE_DIR=\"$(pwd)\""
-    FLAGS="-std=c++20 -O2 -Wall -Wextra -Iinclude -Ithird_party"
+    FLAGS="-std=c++20 -O2 -ffp-contract=off -Wall -Wextra -Iinclude -Ithird_party"
     echo "cmake not found, compiling with $CXX"
     $CXX $FLAGS -DNDEBUG "$SRC" src/bench.cpp -o "$BUILD_DIR/sortbench"
     $CXX $FLAGS -UNDEBUG "$SRC" src/test.cpp  -o "$BUILD_DIR/sortbench_tests"

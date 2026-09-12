@@ -26,7 +26,10 @@ constexpr size_t kPartialInsertionSortLimit = 8;
 
 template <class A>
 inline void sort2(A a, size_t x, size_t y) {
-    if (a.less(a.get(y), a.get(x))) a.swap(x, y);
+    // Function arguments are unsequenced: read in one fixed order so the
+    // trace hash is the same on every compiler.
+    const typename A::value_type vy = a.get(y), vx = a.get(x);
+    if (a.less(vy, vx)) a.swap(x, y);
 }
 template <class A>
 inline void sort3(A a, size_t x, size_t y, size_t z) {
@@ -140,9 +143,12 @@ void pdqsort_loop(A a, size_t begin, size_t end, size_t bad_allowed, bool leftmo
 
         // If a[begin-1] == pivot, everything equal to the pivot is swept left
         // and skipped, which makes many-duplicates inputs O(n log k).
-        if (!leftmost && !a.less(a.get(begin - 1), a.get(begin))) {
-            begin = partition_left(a, begin, end) + 1;
-            continue;
+        if (!leftmost) {
+            const typename A::value_type prev = a.get(begin - 1), first = a.get(begin);
+            if (!a.less(prev, first)) {
+                begin = partition_left(a, begin, end) + 1;
+                continue;
+            }
         }
 
         auto [pivot_pos, already_partitioned] = partition_right(a, begin, end);
