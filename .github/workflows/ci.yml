@@ -31,7 +31,7 @@ jobs:
       matrix:
         gcc: [13, 14]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -54,7 +54,7 @@ jobs:
         run: sh scripts/bench.sh --reps $BENCH_REPS
       - name: Upload results
         if: matrix.gcc == 13
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-linux-x86-64-gcc13
           path: results/linux-x86-64-gcc13.*
@@ -64,7 +64,7 @@ jobs:
     name: Linux Clang (x86-64)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -83,7 +83,7 @@ jobs:
           BENCH_NO_SITE: 1
         run: sh scripts/bench.sh --reps $BENCH_REPS
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-linux-x86-64-clang
           path: results/linux-x86-64-clang.*
@@ -93,7 +93,7 @@ jobs:
     name: Linux GCC (ARM64)
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -112,7 +112,7 @@ jobs:
           BENCH_NO_SITE: 1
         run: sh scripts/bench.sh --reps $BENCH_REPS
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-linux-arm64-gcc
           path: results/linux-arm64-gcc.*
@@ -122,7 +122,7 @@ jobs:
     name: macOS Apple Clang (ARM64)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: brew install ninja
       - name: Configure
@@ -139,7 +139,7 @@ jobs:
           BENCH_NO_SITE: 1
         run: sh scripts/bench.sh --reps $BENCH_REPS
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-macos-arm64-appleclang
           path: results/macos-arm64-appleclang.*
@@ -149,9 +149,9 @@ jobs:
     name: Windows MSVC (x86-64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build -A x64   # default generator is the newest installed Visual Studio
       - name: Build
         run: cmake --build build --config Release
       - name: Test
@@ -164,7 +164,7 @@ jobs:
           BENCH_NO_SITE: 1
         run: .\scripts\bench.ps1 --reps $env:BENCH_REPS
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-windows-x86-64-msvc
           path: results/windows-x86-64-msvc.*
@@ -177,7 +177,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -197,7 +197,7 @@ jobs:
           BENCH_NO_SITE: 1
         run: sh scripts/bench.sh --reps $BENCH_REPS
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-windows-x86-64-mingw
           path: results/windows-x86-64-mingw.*
@@ -210,7 +210,7 @@ jobs:
     name: Deterministic counts at 1,000,000
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -225,7 +225,7 @@ jobs:
           COUNTS_SIZES: "1000000"
         run: sh scripts/counts.sh
       - name: Upload counts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: counts-1000000
           path: results/counts-1000000.csv
@@ -243,7 +243,7 @@ jobs:
           - name: ThreadSanitizer
             sanitize: thread
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -264,7 +264,7 @@ jobs:
     name: libFuzzer (Clang, ASan + UBSan)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -282,7 +282,7 @@ jobs:
     name: Linux GCC -m32 (32-bit, scalar paths)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -304,15 +304,15 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Download benchmark results
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: bench-*
           path: results
           merge-multiple: true
       - name: Download counts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: counts-1000000
@@ -320,14 +320,14 @@ jobs:
       - name: Build the website
         run: python3 scripts/website.py --out site/index.html
       - name: Upload the website
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: site
           path: site/
           if-no-files-found: error
       - name: Upload for GitHub Pages
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site/
 
@@ -344,4 +344,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

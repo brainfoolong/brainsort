@@ -53,7 +53,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-With MSVC: `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`, then
+With MSVC: `cmake -S . -B build -A x64` (any installed Visual Studio 2022 or newer), then
 `cmake --build build --config Release` and `ctest --test-dir build -C Release`.
 
 Every build produces:
