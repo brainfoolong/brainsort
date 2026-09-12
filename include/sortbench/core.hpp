@@ -69,7 +69,6 @@ inline bool operator==(I64Item a, I64Item b) { return a.key == b.key && a.id == 
 inline bool operator==(StrItem a, StrItem b) {
     return a.len == b.len && a.id == b.id && std::memcmp(a.ptr, b.ptr, a.len) == 0;
 }
-template <class T> inline bool operator!=(T a, T b) { return !(a == b); }
 
 }  // namespace sb
 
