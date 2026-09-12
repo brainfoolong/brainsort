@@ -365,143 +365,208 @@ TEMPLATE = r"""<!doctype html>
 <style>
 :root {
   color-scheme: light;
-  --bg: #fcfcfb; --bg-2: #f3f2ef; --bg-3: #ebeae6; --border: #e2e1dc; --grid: #e9e8e3;
-  --text: #0b0b0b; --text-2: #52514e; --text-3: #7a7975;
-  --accent: #2a78d6;
+  --bg: #faf9f6; --bg-2: #f1efea; --bg-3: #e8e5de; --card: #ffffff; --border: #e3e0d8; --grid: #ece9e2;
+  --text: #17160f; --text-2: #55534b; --text-3: #7f7c72;
+  --accent: #2a78d6; --accent-soft: #e6f0fc; --accent-ink: #1c5cab;
   --c-candidate: #2a78d6; --c-upstream: #eb6834; --c-port: #1baf7a; --c-baseline: #eda100;
   --win-1: #e3eefb; --win-2: #b7d3f6; --win-3: #86b6ef; --win-4: #3987e5;
   --loss-1: #fbe4e4; --loss-2: #f5bdbd; --loss-3: #ee8f8f; --loss-4: #e34948;
-  --neutral: #f0efec; --best: #e6f2e6; --warn: #b35a00; --bad: #d03b3b;
-  --shadow: 0 4px 16px rgba(0,0,0,.14);
+  --neutral: #eeece6; --best: #e4f3e4; --warn: #b35a00; --bad: #d03b3b;
+  --shadow: 0 1px 2px rgba(23,22,15,.05), 0 8px 24px rgba(23,22,15,.06);
+  --shadow-lg: 0 12px 40px rgba(23,22,15,.14);
+  --radius: 14px;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #1a1a19; --bg-2: #232322; --bg-3: #2c2c2a; --border: #383835; --grid: #2c2c2a;
-    --text: #ffffff; --text-2: #c3c2b7; --text-3: #8f8e88;
-    --accent: #3987e5;
-    --c-candidate: #3987e5; --c-upstream: #d95926; --c-port: #199e70; --c-baseline: #c98500;
+    --bg: #161614; --bg-2: #1e1e1c; --bg-3: #292926; --card: #1b1b19; --border: #33332f; --grid: #2a2a27;
+    --text: #f4f3ee; --text-2: #bdbbb1; --text-3: #8a8880;
+    --accent: #5b9bea; --accent-soft: #1d2b3e; --accent-ink: #9cc3f5;
+    --c-candidate: #4f93e8; --c-upstream: #e0653a; --c-port: #22b07e; --c-baseline: #d59a1c;
     --win-1: #1e2c3d; --win-2: #1c3b63; --win-3: #1f5297; --win-4: #3987e5;
     --loss-1: #3a2222; --loss-2: #5a2626; --loss-3: #8a3232; --loss-4: #e66767;
-    --neutral: #383835; --best: #1f2e1f; --warn: #f0a050; --bad: #ff7b7b;
-    --shadow: 0 4px 16px rgba(0,0,0,.5);
+    --neutral: #353531; --best: #1f2e1f; --warn: #f0a050; --bad: #ff7b7b;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    --shadow-lg: 0 12px 40px rgba(0,0,0,.6);
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #1a1a19; --bg-2: #232322; --bg-3: #2c2c2a; --border: #383835; --grid: #2c2c2a;
-  --text: #ffffff; --text-2: #c3c2b7; --text-3: #8f8e88;
-  --accent: #3987e5;
-  --c-candidate: #3987e5; --c-upstream: #d95926; --c-port: #199e70; --c-baseline: #c98500;
+  --bg: #161614; --bg-2: #1e1e1c; --bg-3: #292926; --card: #1b1b19; --border: #33332f; --grid: #2a2a27;
+  --text: #f4f3ee; --text-2: #bdbbb1; --text-3: #8a8880;
+  --accent: #5b9bea; --accent-soft: #1d2b3e; --accent-ink: #9cc3f5;
+  --c-candidate: #4f93e8; --c-upstream: #e0653a; --c-port: #22b07e; --c-baseline: #d59a1c;
   --win-1: #1e2c3d; --win-2: #1c3b63; --win-3: #1f5297; --win-4: #3987e5;
   --loss-1: #3a2222; --loss-2: #5a2626; --loss-3: #8a3232; --loss-4: #e66767;
-  --neutral: #383835; --best: #1f2e1f; --warn: #f0a050; --bad: #ff7b7b;
-  --shadow: 0 4px 16px rgba(0,0,0,.5);
+  --neutral: #353531; --best: #1f2e1f; --warn: #f0a050; --bad: #ff7b7b;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,.6);
 }
 * { box-sizing: border-box; }
-html { scroll-padding-top: 120px; }
-body { margin: 0; padding-block: 0 72px; padding-inline: 16px; background: var(--bg); color: var(--text);
-       font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+html { scroll-padding-top: 130px; scroll-behavior: smooth; }
+body { margin: 0; padding-block: 0 80px; padding-inline: 16px; background: var(--bg); color: var(--text);
+       font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
 main { max-width: 1180px; margin: 0 auto; }
-a { color: var(--accent); }
-h1 { font-size: clamp(28px, 5vw, 40px); font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
-h2 { font-size: clamp(20px, 3vw, 26px); font-weight: 650; letter-spacing: -.01em; margin: 56px 0 10px; }
-h3 { font-size: 17px; font-weight: 650; margin: 28px 0 6px; }
-h4 { font-size: 14px; font-weight: 600; margin: 20px 0 6px; color: var(--text-2); }
+a { color: var(--accent); text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--accent); }
+h1 { font-size: clamp(34px, 6vw, 52px); font-weight: 750; letter-spacing: -.03em; margin: 0; line-height: 1.05; }
+h2 { font-size: clamp(22px, 3vw, 30px); font-weight: 700; letter-spacing: -.02em; margin: 0 0 10px; line-height: 1.2; }
+h3 { font-size: 17px; font-weight: 650; margin: 34px 0 6px; letter-spacing: -.01em; }
+h4 { font-size: 13px; font-weight: 600; margin: 22px 0 8px; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; }
 p, li { color: var(--text-2); max-width: 78ch; }
-p.lead { font-size: 18px; color: var(--text); max-width: 70ch; }
+p.lead { font-size: 19px; color: var(--text); max-width: 66ch; line-height: 1.5; margin: 18px 0 0; }
 .muted { color: var(--text-3); font-size: 13px; }
-.note { font-size: 13.5px; color: var(--text-3); margin: 6px 0 12px; max-width: 90ch; }
+.note { font-size: 14px; color: var(--text-3); margin: 6px 0 14px; max-width: 90ch; }
 code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
-code { background: var(--bg-2); padding: 1px 5px; border-radius: 4px; }
-pre { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 13px; }
+code { background: var(--bg-2); padding: 1px 6px; border-radius: 6px; }
+pre { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.55; }
 pre code { background: none; padding: 0; }
-header { padding: 36px 0 8px; }
-.topline { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
-.badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); background: var(--bg-2); }
-.links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 0; font-size: 14px; }
-.stamp { font-size: 13px; color: var(--text-3); margin: 10px 0 0; }
-nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 20px 0 0; font-size: 14px; }
-.panel { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--border);
-         margin: 28px -16px 0; padding: 8px 16px 6px; }
-.panel .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 3px 0; }
-.lbl { font-size: 12px; color: var(--text-3); min-width: 64px; text-transform: uppercase; letter-spacing: .04em; }
-.chips { display: flex; flex-wrap: wrap; gap: 5px; }
-button.chip { font: inherit; font-size: 13px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border);
-              background: var(--bg-2); color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; line-height: 1.3; }
-button.chip:hover { border-color: var(--text-3); }
-button.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ---- header ---- */
+header { padding: 52px 0 12px; }
+.topline { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.badge { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); background: var(--card); }
+.badge.accent { background: var(--accent-soft); color: var(--accent-ink); border-color: transparent; }
+.links { display: flex; flex-wrap: wrap; gap: 8px 10px; margin: 22px 0 0; }
+.links a { font-size: 14px; font-weight: 500; text-decoration: none; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.links a:hover { border-color: var(--accent); color: var(--accent); }
+.stamp { font-size: 13px; color: var(--text-3); margin: 16px 0 0; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 26px 0 0; padding: 14px 0 0; border-top: 1px solid var(--border); font-size: 14px; counter-reset: toc; }
+nav.toc a { text-decoration: none; color: var(--text-2); counter-increment: toc; }
+nav.toc a::before { content: counter(toc, decimal-leading-zero) " "; color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 2px; }
+nav.toc a:hover { color: var(--accent); }
+
+/* ---- sections ---- */
+section, details.section { margin-top: 72px; }
+.eyebrow { display: block; font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+.eyebrow::before { content: ""; display: inline-block; width: 22px; height: 2px; background: var(--accent); vertical-align: middle; margin-right: 8px; border-radius: 2px; }
+.intro { font-size: 16px; color: var(--text-2); max-width: 74ch; margin: 0 0 18px; }
+
+/* ---- sticky controls ---- */
+.panel { position: sticky; top: 0; z-index: 5; margin: 36px -16px 0; padding: 10px 16px 10px;
+         background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+         border-bottom: 1px solid var(--border); }
+.panel .inner { max-width: 1180px; margin: 0 auto; }
+.panel .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 4px 0; }
+.lbl { font-size: 11.5px; font-weight: 600; color: var(--text-3); min-width: 70px; text-transform: uppercase; letter-spacing: .07em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+button.chip { font: inherit; font-size: 13.5px; font-weight: 500; padding: 5px 13px; border-radius: 999px; border: 1px solid var(--border);
+              background: var(--card); color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; gap: 7px; line-height: 1.3;
+              transition: border-color .12s, background .12s, color .12s; }
+button.chip:hover { border-color: var(--accent); color: var(--text); }
+button.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent); }
 button.chip i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-button.chip.sw[aria-pressed="true"] i { outline: 2px solid #fff; outline-offset: -1px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 14px 0 8px; }
-.tile { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--bg); }
-.tile .k { font-size: 12.5px; color: var(--text-3); }
-.tile .v { font-size: 30px; font-weight: 650; letter-spacing: -.02em; margin: 2px 0 2px; line-height: 1.15; }
-.tile .v small { font-size: 15px; font-weight: 500; color: var(--text-2); }
-.tile .s { font-size: 13px; color: var(--text-2); }
-.tile.win .v { color: var(--c-candidate); } .tile.loss .v { color: var(--loss-4); }
-.tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin: 8px 0; }
+button.chip.dim { opacity: .55; }
+button.chip.dim[aria-pressed="true"] { opacity: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 12px 0 0; font-size: 13px; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 2px; }
+.legend i, table.data td .sw, .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+
+/* ---- tiles ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 18px 0 10px; }
+.tile { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px 16px; background: var(--card); box-shadow: var(--shadow); }
+.tile .k { font-size: 12.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
+.tile .v { font-size: 34px; font-weight: 750; letter-spacing: -.03em; margin: 6px 0 4px; line-height: 1.1; color: var(--text); }
+.tile .v small { font-size: 15px; font-weight: 500; color: var(--text-3); letter-spacing: 0; }
+.tile .s { font-size: 13.5px; color: var(--text-2); line-height: 1.5; }
+.tile.win .v { color: var(--accent); } .tile.loss .v { color: var(--loss-4); }
+.tile.hero { background: linear-gradient(135deg, var(--accent-soft), var(--card) 70%); }
+
+/* ---- tables ---- */
+.tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; margin: 10px 0; background: var(--card); box-shadow: var(--shadow); }
 table.data { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
-table.data th, table.data td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
-table.data th { color: var(--text-2); font-weight: 500; background: var(--bg-2); position: sticky; top: 0; }
+table.data th, table.data td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+table.data th { color: var(--text-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; background: var(--bg-2); position: sticky; top: 0; }
 table.data th:first-child, table.data td:first-child { text-align: left; }
 table.data tr:last-child td { border-bottom: 0; }
 table.data td.best { background: var(--best); font-weight: 600; }
 table.data td .rel { color: var(--text-3); font-weight: 400; font-size: 11px; margin-left: 4px; }
-table.data td .sw, .legend i, .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
 table.data.wrap td, table.data.wrap th { white-space: normal; text-align: left; }
 table.heat td { text-align: center; padding: 0; }
-table.heat td:first-child { text-align: left; padding: 6px 10px; }
-table.heat td.cell > div { padding: 7px 8px; min-width: 66px; }
+table.heat td:first-child { text-align: left; padding: 8px 12px; font-weight: 500; }
+table.heat td.cell > div { padding: 9px 8px; min-width: 70px; border-radius: 6px; margin: 2px; }
 table.heat td.cell.w { font-weight: 600; }
 table.heat td.l1 > div { background: var(--loss-1); } table.heat td.l2 > div { background: var(--loss-2); }
 table.heat td.l3 > div { background: var(--loss-3); } table.heat td.l4 > div { background: var(--loss-4); color: #fff; }
 table.heat td.w1 > div { background: var(--win-1); } table.heat td.w2 > div { background: var(--win-2); }
 table.heat td.w3 > div { background: var(--win-3); } table.heat td.w4 > div { background: var(--win-4); color: #fff; }
 table.heat td.n0 > div { background: var(--neutral); }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 10px; font-size: 13px; color: var(--text-2); }
-.legend span { display: inline-flex; align-items: center; gap: 2px; }
-.tag { display: inline-block; font-size: 10.5px; line-height: 1.3; font-weight: 500; letter-spacing: .02em; padding: 1px 6px; border-radius: 999px;
-       border: 1px solid var(--text-3); color: var(--text-3); margin-left: 6px; vertical-align: 1px; }
-.tag.det { border-color: var(--c-candidate); color: var(--c-candidate); }
-.tag.warn { border-color: var(--warn); color: var(--warn); }
-.tag.bad { border-color: var(--bad); color: var(--bad); }
+.scale { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-3); margin: 8px 0 4px; flex-wrap: wrap; }
+.scale .bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; width: 200px; }
+.scale .bar i { flex: 1; }
+
+/* ---- tags ---- */
+.tag { display: inline-block; font-size: 10.5px; line-height: 1.3; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+       background: var(--bg-3); color: var(--text-2); margin-left: 6px; vertical-align: 2px; }
+.tag.det { background: var(--accent-soft); color: var(--accent-ink); }
+.tag.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.tag.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+
+/* ---- cards and charts ---- */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
-.card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 8px; background: var(--bg); min-width: 0; }
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 10px; background: var(--card); min-width: 0; box-shadow: var(--shadow); }
 .card h3 { margin: 0 0 2px; font-size: 15px; }
-.card .desc { font-size: 12.5px; color: var(--text-3); margin: 0 0 6px; }
+.card .desc { font-size: 12.5px; color: var(--text-3); margin: 0 0 8px; }
 svg { display: block; width: 100%; height: auto; overflow: visible; }
 svg text { font-family: inherit; }
-.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-       border-radius: 8px; padding: 8px 10px; font-size: 12.5px; box-shadow: var(--shadow); max-width: min(380px, 90vw); }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--card); color: var(--text); border: 1px solid var(--border);
+       border-radius: 10px; padding: 10px 12px; font-size: 12.5px; box-shadow: var(--shadow-lg); max-width: min(380px, 90vw); }
 .tip b { display: block; margin-bottom: 4px; }
 .tip table { border-collapse: collapse; }
 .tip td { padding: 1px 8px 1px 0; color: var(--text-2); white-space: nowrap; }
 .tip td:last-child { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
-details { border: 1px solid var(--border); border-radius: 10px; padding: 0 14px; margin: 12px 0; background: var(--bg); }
-details > summary { cursor: pointer; padding: 11px 0; color: var(--text); font-weight: 500; list-style: none; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+
+/* ---- collapsibles ---- */
+details { border: 1px solid var(--border); border-radius: 12px; margin: 14px 0; background: var(--card); box-shadow: var(--shadow); }
+details > summary { cursor: pointer; padding: 13px 16px; color: var(--text); font-weight: 600; list-style: none; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-radius: 12px; transition: background .12s; }
+details > summary:hover { background: var(--bg-2); }
+details[open] > summary { border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0; }
 details > summary::-webkit-details-marker { display: none; }
-details > summary::before { content: "+"; display: inline-block; width: 16px; color: var(--text-3); font-weight: 600; }
-details[open] > summary::before { content: "\2212"; }
+details > summary::before { content: ""; flex: none; width: 22px; height: 22px; border-radius: 6px; background: var(--accent-soft);
+  background-image: linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
+  background-size: 10px 2px, 2px 10px; background-position: center; background-repeat: no-repeat; transition: transform .15s; }
+details[open] > summary::before { background-size: 10px 2px, 0 0; }
 details > summary .muted { font-weight: 400; }
-details > .body { padding: 0 0 12px; }
-details.section { border: 0; padding: 0; margin: 0; }
-details.section > summary { padding: 0; margin: 56px 0 10px; }
-details.section > summary h2 { margin: 0; }
-details.section > summary::before { font-size: 22px; width: 22px; }
-.machine { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; background: var(--bg-2); font-size: 13.5px; color: var(--text-2); margin: 10px 0; }
+details > summary .hint { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--accent); }
+details > summary .hint::after { content: "Show"; }
+details[open] > summary .hint::after { content: "Hide"; }
+details > .body { padding: 6px 16px 16px; }
+details.section { border: 0; box-shadow: none; background: none; }
+details.section > summary { display: block; padding: 22px 26px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); position: relative; }
+details.section > summary:hover { border-color: var(--accent); background: var(--card); }
+details.section[open] > summary { border-radius: var(--radius); margin-bottom: 8px; border-color: var(--border); }
+details.section > summary::before { position: absolute; right: 24px; top: 26px; width: 28px; height: 28px; border-radius: 8px; background-size: 12px 2px, 2px 12px; }
+details.section[open] > summary::before { background-size: 12px 2px, 0 0; }
+details.section > summary h2 { margin: 6px 0 6px; padding-right: 48px; }
+details.section > summary .muted { display: block; font-size: 14px; }
+details.section > summary .hint { display: block; margin: 8px 0 0; font-size: 13.5px; }
+details.section > summary .hint::after { content: "Open this section \2193"; }
+details.section[open] > summary .hint::after { content: "Collapse this section \2191"; }
+details.section > .body { padding: 8px 0 0; }
+
+/* ---- guides and callouts ---- */
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: 0 10px 10px 0; padding: 10px 16px; margin: 14px 0; font-size: 14px; max-width: 90ch; }
+.callout.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 14px; margin-top: 18px; }
+.guide .g { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 16px 18px; box-shadow: var(--shadow); }
+.guide .g b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+.guide .g p { font-size: 14px; margin: 0; }
+.guide .g .n { display: inline-flex; width: 26px; height: 26px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; font-size: 13px; align-items: center; justify-content: center; margin-bottom: 10px; }
+.machine { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 12px 16px; background: var(--card); font-size: 13.5px; color: var(--text-2); margin: 12px 0; box-shadow: var(--shadow); }
 .machine b { color: var(--text); }
 .empty { color: var(--text-3); font-style: italic; }
 .fail { color: var(--bad); }
-.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px 28px; }
-dl { margin: 6px 0; } dt { font-weight: 600; color: var(--text); margin-top: 10px; } dd { margin: 2px 0 0; color: var(--text-2); max-width: 80ch; }
-.row.inline { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 8px 0; }
-select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); }
-footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-3); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px 40px; }
+dl { margin: 6px 0; } dt { font-weight: 600; color: var(--text); margin-top: 12px; } dd { margin: 2px 0 0; color: var(--text-2); max-width: 80ch; font-size: 14px; }
+.row.inline { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 10px 0; }
+select { font: inherit; font-size: 13.5px; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-3); }
 @media (max-width: 640px) {
   .panel .row { gap: 4px 8px; } .lbl { min-width: 100%; }
-  .tile .v { font-size: 26px; }
-  html { scroll-padding-top: 220px; }
+  .tile .v { font-size: 28px; }
+  html { scroll-padding-top: 240px; }
+  details.section > summary { padding: 18px 18px; }
+  details.section > summary::before { right: 16px; top: 18px; }
 }
 @media print { .panel { position: static; } details { border: 0; } }
 </style>
@@ -509,7 +574,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border
 <body>
 <main>
 <header>
-  <div class="topline"><h1>brainsort</h1><span class="badge">version __VERSION__</span><span class="badge" id="badge-stable">stable sort</span></div>
+  <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><span class="badge">header-only C++20</span></div>
   <p class="lead">A stable sorting algorithm for keys that map to an ordered integer: numbers, strings, dates, ids. Measured against the sorts that ship in today's standard libraries, on the same inputs, the same compiler flags and the same machines.</p>
   <div class="links" id="links"></div>
   <p class="stamp" id="stamp"></p>
@@ -520,43 +585,44 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border
 </header>
 
 <section id="glance">
+<span class="eyebrow">Overview</span>
 <h2>At a glance</h2>
-<p id="glance-text"></p>
+<p class="intro" id="glance-text"></p>
 <div class="tiles" id="glance-tiles"></div>
 <p class="note" id="glance-note"></p>
 </section>
 
 <section id="reading">
+<span class="eyebrow">Reading guide</span>
 <h2>How to read this page</h2>
-<div class="cols">
-<div>
-<p><b>A cell</b> is one key type on one input pattern at one size. For every cell brainsort is compared with the <em>best</em> of the other sorts shown, whichever that is. A number like <em>38 of 45</em> counts the cells in which brainsort is best or tied.</p>
-<p><b>Lower is better</b> on every number here: fewer bytes moved, fewer comparisons, less memory, less time.</p>
-<p><b>Two kinds of numbers.</b> <span class="tag det">deterministic</span> numbers describe what an algorithm <em>does</em>: bytes moved, comparisons made, memory asked for. They come from an instrumented run, are the same on every machine, and the test suite holds every algorithm to them. <span class="tag">measured</span> numbers are clocks and hardware counters. They depend on the machine and vary from run to run, so they are shown per machine, with the machine.</p>
-</div>
-<div>
-<p><b>Stable sorts only, by default.</b> A stable sort keeps equal keys in their original order, which is what sorting records by one field needs. It has more work to do than an unstable sort, so the two are not a fair match. brainsort is stable; the page compares it with the other stable sorts. Switch on <em>unstable sorts</em> to see std::sort and pdqsort too.</p>
-<p><b>Sizes.</b> Every number exists at several input sizes. The <em>size</em> control changes the whole page; the <em>across sizes</em> charts show one metric per element as the input grows.</p>
-<p><b>Colours.</b> In the win/loss maps blue means brainsort is ahead, red that it is behind, grey a tie within 5%. The shade is the size of the margin.</p>
-</div>
+<p class="intro">Six things to know, then every number below makes sense.</p>
+<div class="guide">
+<div class="g"><span class="n">1</span><b>A cell</b><p>One key type on one input pattern at one size. In every cell brainsort is compared with the <em>best</em> of the other sorts shown, whichever that is. <em>38 of 45</em> means brainsort is best or tied in 38 cells.</p></div>
+<div class="g"><span class="n">2</span><b>Lower is better</b><p>On every number here: fewer bytes moved, fewer comparisons, less memory, less time.</p></div>
+<div class="g"><span class="n">3</span><b>Two kinds of numbers</b><p><span class="tag det" style="margin-left:0">deterministic</span> numbers describe what an algorithm <em>does</em>: bytes moved, comparisons made, memory asked for. Counted, the same on every machine, held by the test suite. <span class="tag" style="margin-left:0">measured</span> numbers are clocks and hardware counters: they depend on the machine and vary between runs, so they are shown per machine.</p></div>
+<div class="g"><span class="n">4</span><b>Stable sorts by default</b><p>A stable sort keeps equal keys in their original order, which sorting records by one field needs. It has more work to do than an unstable sort. brainsort is stable and is compared with the other stable sorts; switch on <em>unstable sorts</em> to add std::sort and pdqsort.</p></div>
+<div class="g"><span class="n">5</span><b>Sizes</b><p>Every number exists at several input sizes. The <em>size</em> control changes the whole page; the <em>across sizes</em> charts show a metric per element as the input grows.</p></div>
+<div class="g"><span class="n">6</span><b>Colours</b><p>Blue: brainsort ahead. Red: behind. Grey: a tie within 5%. Darker is a larger margin. In charts, colour is the family of an algorithm:</p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span><span><i style="background:var(--c-port)"></i>our instrumented ports</span><span><i style="background:var(--c-baseline)"></i>radix baselines</span></div></div>
 </div>
 </section>
 
-<div class="panel" id="panel">
+<div class="panel" id="panel"><div class="inner">
   <div class="row"><span class="lbl">size</span><div class="chips" id="c-size"></div></div>
   <div class="row"><span class="lbl">key type</span><div class="chips" id="c-types"></div></div>
   <div class="row"><span class="lbl">inputs</span><div class="chips" id="c-datasets"></div>
     <span class="lbl" style="min-width:0;margin-left:8px">also show</span><div class="chips" id="c-groups"></div></div>
-</div>
+</div></div>
 
 <section id="det">
+<span class="eyebrow">Same on every machine</span>
 <h2>What each algorithm does <span class="tag det">deterministic</span></h2>
-<p>These numbers are the same on every computer. They are counted, not timed: how many bytes an algorithm moves, how many comparisons it makes, how much memory it asks for. Choose a metric:</p>
+<div id="det-fallback"></div>
+<p class="intro">These numbers are the same on every computer. They are counted, not timed: how many bytes an algorithm moves, how many comparisons it makes, how much memory it asks for. Choose a metric:</p>
 <div class="chips" id="c-det-metric"></div>
 <p class="note" id="det-metric-note"></p>
 <div class="tiles" id="det-tiles"></div>
 <h3>Where brainsort wins and loses</h3>
-<p class="note" id="det-heat-note"></p>
+<p class="note" id="det-heat-note"></p><div class="scale"><span>brainsort behind</span><div class="bar"><i style="background:var(--loss-4)"></i><i style="background:var(--loss-3)"></i><i style="background:var(--loss-2)"></i><i style="background:var(--loss-1)"></i><i style="background:var(--neutral)"></i><i style="background:var(--win-1)"></i><i style="background:var(--win-2)"></i><i style="background:var(--win-3)"></i><i style="background:var(--win-4)"></i></div><span>brainsort ahead</span><span class="muted">grey: a tie within 5%. Each cell is the best other sort divided by brainsort.</span></div>
 <div class="tablewrap"><table class="data heat" id="det-heat"></table></div>
 <h3>Across sizes</h3>
 <p class="note" id="det-sizes-note"></p>
@@ -565,20 +631,20 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border
 <h3>One cell in detail</h3>
 <div class="row inline"><span class="lbl" style="min-width:0">key type</span><select id="det-bar-t"></select><span class="lbl" style="min-width:0">input</span><select id="det-bar-d"></select></div>
 <div class="grid" id="det-bar"></div>
-<details id="det-tables-wrap"><summary>Full tables for this metric<span class="muted" id="det-tables-sum"></span></summary><div class="body" id="det-tables"></div></details>
+<details id="det-tables-wrap"><summary>Full tables for this metric<span class="muted" id="det-tables-sum"></span><span class="hint"></span></summary><div class="body" id="det-tables"></div></details>
 </section>
 
 <details class="section" id="timing">
-<summary><h2>Measured time per machine <span class="tag">measured</span></h2><span class="muted" id="timing-sum"></span></summary>
+<summary><span class="eyebrow">Per machine</span><h2>Measured time per machine <span class="tag">measured</span></h2><span class="muted" id="timing-sum"></span><span class="hint"></span></summary>
 <div class="body">
-<p id="timing-intro"></p>
+<p class="intro" id="timing-intro"></p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span><span><i style="background:var(--c-port)"></i>our instrumented ports</span><span><i style="background:var(--c-baseline)"></i>radix baselines</span></div>
 <div class="row inline"><span class="lbl" style="min-width:0">machine</span><div class="chips" id="c-platform"></div></div>
 <div class="machine" id="machine"></div>
 <div class="chips" id="c-meas-metric"></div>
 <p class="note" id="meas-metric-note"></p>
 <div class="tiles" id="meas-tiles"></div>
 <h3>Where brainsort wins and loses</h3>
-<p class="note" id="meas-heat-note"></p>
+<p class="note" id="meas-heat-note"></p><div class="scale"><span>brainsort behind</span><div class="bar"><i style="background:var(--loss-4)"></i><i style="background:var(--loss-3)"></i><i style="background:var(--loss-2)"></i><i style="background:var(--loss-1)"></i><i style="background:var(--neutral)"></i><i style="background:var(--win-1)"></i><i style="background:var(--win-2)"></i><i style="background:var(--win-3)"></i><i style="background:var(--win-4)"></i></div><span>brainsort ahead</span><span class="muted">grey: a tie within 5%. Each cell is the best other sort divided by brainsort.</span></div>
 <div class="tablewrap"><table class="data heat" id="meas-heat"></table></div>
 <h3>Across sizes</h3>
 <p class="note" id="meas-sizes-note"></p>
@@ -587,7 +653,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border
 <h3>One cell in detail</h3>
 <div class="row inline"><span class="lbl" style="min-width:0">key type</span><select id="meas-bar-t"></select><span class="lbl" style="min-width:0">input</span><select id="meas-bar-d"></select></div>
 <div class="grid" id="meas-bar"></div>
-<details><summary>Full tables for this metric<span class="muted" id="meas-tables-sum"></span></summary><div class="body" id="meas-tables"></div></details>
+<details><summary>Full tables for this metric<span class="muted" id="meas-tables-sum"></span><span class="hint"></span></summary><div class="body" id="meas-tables"></div></details>
 <h3>All machines side by side</h3>
 <p class="note" id="allplat-note"></p>
 <div class="tablewrap"><table class="data" id="allplat"></table></div>
@@ -595,19 +661,20 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border
 </details>
 
 <details class="section" id="api">
-<summary><h2>The library on plain vectors <span class="tag">measured</span></h2><span class="muted" id="api-sum"></span></summary>
+<summary><span class="eyebrow">What a user gets</span><h2>The library on plain vectors <span class="tag">measured</span></h2><span class="muted" id="api-sum"></span><span class="hint"></span></summary>
 <div class="body">
-<p id="api-intro"></p>
+<p class="intro" id="api-intro"></p>
 <div class="row inline"><span class="lbl" style="min-width:0">machine</span><div class="chips" id="c-api-platform"></div><span class="lbl" style="min-width:0;margin-left:8px">elements</span><div class="chips" id="c-api-n"></div></div>
 <div class="machine" id="api-machine"></div>
 <div class="tiles" id="api-tiles"></div>
-<p class="note" id="api-heat-note"></p>
+<p class="note" id="api-heat-note"></p><div class="scale"><span>brainsort behind</span><div class="bar"><i style="background:var(--loss-4)"></i><i style="background:var(--loss-3)"></i><i style="background:var(--loss-2)"></i><i style="background:var(--loss-1)"></i><i style="background:var(--neutral)"></i><i style="background:var(--win-1)"></i><i style="background:var(--win-2)"></i><i style="background:var(--win-3)"></i><i style="background:var(--win-4)"></i></div><span>brainsort ahead</span><span class="muted">grey: a tie within 5%. Each cell is the best other sort divided by brainsort.</span></div>
 <div class="tablewrap"><table class="data heat" id="api-heat"></table></div>
 <div id="api-tables"></div>
 </div>
 </details>
 
 <section id="method">
+<span class="eyebrow">Behind the numbers</span>
 <h2>Method</h2>
 <div class="cols">
 <div>
@@ -641,6 +708,7 @@ python3 scripts/website.py     # the website alone, from results/</code></pre>
 </section>
 
 <section id="tables">
+<span class="eyebrow">Raw data</span>
 <h2>All numbers</h2>
 <p>Every value behind this page, for the selected size and key types: the deterministic columns once, the measured columns per machine. Open a cell to render it.</p>
 <div id="all-tables"></div>
@@ -666,6 +734,11 @@ const ALGO = Object.fromEntries(DATA.algos.map(a => [a.name, a]));
 const PLAT = Object.fromEntries(DATA.platforms.map(p => [p.id, p]));
 const APIPLAT = Object.fromEntries(DATA.api.platforms.map(p => [p.id, p]));
 const REF_N = DATA.sizes.includes(100000) ? 100000 : DATA.sizes[DATA.sizes.length - 1];
+// Not every size has every kind of number: the deterministic runs may stop below the
+// largest timed size (CI adds the million-element counts). Fall back to the nearest size below.
+const DET_SIZES = [...new Set(DET.rows.map(r => r[0]))].sort((a, b) => a - b);
+function detN() { if (DET_SIZES.includes(state.n)) return state.n; const below = DET_SIZES.filter(n => n < state.n); return below.length ? below[below.length - 1] : DET_SIZES[0]; }
+const hasTiming = (pid, n) => TIM.rows.some(r => r[0] === pid && r[1] === n);
 
 // ---- formatting ----------------------------------------------------------------
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -807,7 +880,7 @@ const timGet = (p, n, t, d, m) => a => { const r = timRow(p, n, t, d, a); return
 const oppNoun = () => state.unstable ? 'sorts shown' : 'stable sorts';
 
 // ---- tiles, heat map, tables, charts (shared by both sections) --------------------
-function tiles(host, m, sc, extra) {
+function tiles(host, m, sc, extra, atN) {
   const n = sc.cells.length;
   if (!n) { host.innerHTML = `<div class="tile empty">Nothing to compare: no other sort has ${esc(m.label.toLowerCase())} here.</div>`; return; }
   let bw = 'none', bs = 'brainsort is never ahead here', wc = 'none', ws = 'brainsort is best or tied in every cell';
@@ -817,18 +890,18 @@ function tiles(host, m, sc, extra) {
   if (m.key === 'aux' && sc.zeroLoss) { wc = m.fmt(sc.zeroLoss.c.b); ws = `where the in-place sorts use none (${sc.zeroLoss.t} ${sc.zeroLoss.d})`; }
   else if (sc.worst) { wc = lossPhrase(m, 1 / sc.worst.c.ratio); ws = `than ${sc.worst.c.opp} on ${sc.worst.t} ${sc.worst.d} (${m.fmt(sc.worst.c.b)} vs ${m.fmt(sc.worst.c.o)}${m.faster ? ', +' + ns(sc.worst.c.b - sc.worst.c.o) : ''})`; }
   host.innerHTML =
-    `<div class="tile ${sc.wins.length * 2 >= n ? 'win' : 'loss'}"><div class="k">${esc(m.label)}${extra ? ' · ' + esc(extra) : ''}</div><div class="v">${sc.wins.length} <small>of ${n} cells</small></div><div class="s">where brainsort is ${m.faster ? 'fastest' : 'lowest'} or tied among the ${esc(oppNoun())}, at n = ${fmtN(state.n)}</div></div>` +
+    `<div class="tile hero ${sc.wins.length * 2 >= n ? 'win' : 'loss'}"><div class="k">${esc(m.label)}${extra ? ' · ' + esc(extra) : ''}</div><div class="v">${sc.wins.length} <small>of ${n} cells</small></div><div class="s">where brainsort is ${m.faster ? 'fastest' : 'lowest'} or tied among the ${esc(oppNoun())}, at n = ${fmtN(atN || state.n)}</div></div>` +
     `<div class="tile"><div class="k">Biggest win</div><div class="v">${esc(bw)}</div><div class="s">${esc(bs)}</div></div>` +
     `<div class="tile"><div class="k">Worst loss</div><div class="v">${esc(wc)}</div><div class="s">${esc(ws)}</div></div>`;
 }
-function heat(host, m, getFor, tipKind) {
+function heat(host, m, getFor, tipKind, n) {
   const types = selTypes();
   let h = '<thead><tr><th>input</th>' + types.map(t => `<th title="${esc(t.desc)}">${esc(t.name)}</th>`).join('') + '</tr></thead><tbody>';
   for (const d of selDatasets()) {
     h += `<tr><td title="${esc(d.description)}">${esc(d.name)}</td>`;
     for (const t of types) {
       const c = compareCell(getFor(t.name, d.name));
-      h += c ? `<td class="cell ${heatClass(c)}" data-tip="${tipKind}" data-t="${esc(t.name)}" data-d="${esc(d.name)}"><div>${ratioText(c)}</div></td>` : `<td class="cell"><div class="muted">${detRow(state.n, t.name, d.name, DATA.candidate) || timRow(state.p, state.n, t.name, d.name, DATA.candidate) ? 'n/a' : '–'}</div></td>`;
+      h += c ? `<td class="cell ${heatClass(c)}" data-tip="${tipKind}" data-t="${esc(t.name)}" data-d="${esc(d.name)}"><div>${ratioText(c)}</div></td>` : `<td class="cell"><div class="muted">${detRow(n, t.name, d.name, DATA.candidate) || timRow(state.p, n, t.name, d.name, DATA.candidate) ? 'n/a' : '–'}</div></td>`;
     }
     h += '</tr>';
   }
@@ -927,7 +1000,7 @@ function barChart(host, m, get, title, desc) {
 function chips(host, items, isOn, onClick, cls) {
   host.innerHTML = '';
   for (const it of items) {
-    const b = document.createElement('button'); b.className = 'chip' + (cls ? ' ' + cls : '') + (it.color ? ' sw' : '');
+    const b = document.createElement('button'); b.className = 'chip' + (cls ? ' ' + cls : '') + (it.color ? ' sw' : '') + (it.cls ? ' ' + it.cls : '');
     b.innerHTML = (it.color ? `<i style="background:${it.color}"></i>` : '') + esc(it.label);
     b.setAttribute('aria-pressed', String(!!isOn(it)));
     if (it.title) b.title = it.title;
@@ -940,7 +1013,8 @@ function selectOptions(el, items, value, onChange) {
   el.onchange = () => { onChange(el.value); render(); };
 }
 function refresh() {
-  chips(document.getElementById('c-size'), DATA.sizes.map(n => ({ id: n, label: fmtN(n) + ' elements' })), it => state.n === it.id, it => { state.n = it.id; });
+  chips(document.getElementById('c-size'), DATA.sizes.map(n => ({ id: n, label: fmtN(n) + ' elements', cls: DET_SIZES.includes(n) ? '' : 'dim',
+    title: DET_SIZES.includes(n) ? '' : 'timing only in this build of the page: the deterministic numbers at this size come from the CI build' })), it => state.n === it.id, it => { state.n = it.id; });
   chips(document.getElementById('c-types'), [...DATA.types.map(t => ({ id: t.name, label: t.name, title: t.desc + ': ' + t.real })), { id: 'all', label: 'all types' }],
     it => it.id === 'all' ? state.types.length === DATA.types.length : state.types.length === 1 && state.types[0] === it.id,
     it => { state.types = it.id === 'all' ? DATA.types.map(t => t.name) : [it.id]; });
@@ -982,7 +1056,7 @@ function renderHeader() {
     (DATA.skipped.length ? ` Left out as stale (measured other code): ${esc(DATA.skipped.join(', '))}.` : '');
 }
 function renderGlance() {
-  const n = state.n;
+  const n = detN(), nt = state.n;
   // Deterministic, against the stable sorts, all inputs, all types: the honest core claim.
   const saveUn = state.unstable, saveBase = state.baselines, saveTypes = state.types, saveDs = state.datasets;
   state.unstable = false; state.baselines = false; state.types = DATA.types.map(t => t.name); state.datasets = 'all';
@@ -992,22 +1066,22 @@ function renderGlance() {
   // Measured wall time per machine, stable and all.
   const measStable = [], measAll = [];
   for (const p of DATA.platforms) {
-    state.unstable = false; const s1 = score((t, d) => timGet(p.id, n, t, d, 'wall'));
-    state.unstable = true; const s2 = score((t, d) => timGet(p.id, n, t, d, 'wall'));
+    state.unstable = false; const s1 = score((t, d) => timGet(p.id, nt, t, d, 'wall'));
+    state.unstable = true; const s2 = score((t, d) => timGet(p.id, nt, t, d, 'wall'));
     if (s1.cells.length) { measStable.push({ p, s: s1 }); measAll.push({ p, s: s2 }); }
   }
   state.unstable = saveUn; state.baselines = saveBase; state.types = saveTypes; state.datasets = saveDs;
   const cells = stableScores.traffic.cells.length;
   const tf = stableScores.traffic, cp = stableScores.compares, ax = stableScores.aux;
   const tiles = [];
-  tiles.push(`<div class="tile win"><div class="k">Bytes moved <span class="tag det">deterministic</span></div><div class="v">${tf.wins.length} <small>of ${cells}</small></div><div class="s">cells in which brainsort moves the fewest bytes of every stable sort; ${allScores.traffic.wins.length} of ${allScores.traffic.cells.length} counting the unstable sorts too</div></div>`);
+  tiles.push(`<div class="tile hero win"><div class="k">Bytes moved <span class="tag det">deterministic</span></div><div class="v">${tf.wins.length} <small>of ${cells}</small></div><div class="s">cells in which brainsort moves the fewest bytes of every stable sort; ${allScores.traffic.wins.length} of ${allScores.traffic.cells.length} counting the unstable sorts too</div></div>`);
   tiles.push(`<div class="tile win"><div class="k">Comparisons <span class="tag det">deterministic</span></div><div class="v">${cp.wins.length} <small>of ${cells}</small></div><div class="s">cells with the fewest comparisons of every stable sort; ${allScores.compares.wins.length} of ${allScores.compares.cells.length} against all sorts</div></div>`);
   const rnd = detRow(n, 'int32', 'random', DATA.candidate), srt = detRow(n, 'int32', 'random', 'std::stable_sort');
   tiles.push(`<div class="tile"><div class="k">Scratch memory <span class="tag det">deterministic</span></div><div class="v">${ax.wins.length} <small>of ${cells}</small></div><div class="s">cells with the least scratch memory of every stable sort${rnd && srt ? `; on random int32 brainsort asks for ${bytes(DET.get(rnd, 'aux'))} and std::stable_sort for ${bytes(DET.get(srt, 'aux'))}` : ''}. The in-place unstable sorts always use none.</div></div>`);
   if (measStable.length) {
     const ws = measStable.map(x => x.s.wins.length), wa = measAll.map(x => x.s.wins.length), tot = measStable[0].s.cells.length;
     const rng = a => Math.min(...a) === Math.max(...a) ? String(a[0]) : `${Math.min(...a)} to ${Math.max(...a)}`;
-    tiles.push(`<div class="tile"><div class="k">Wall time <span class="tag">measured</span></div><div class="v">${esc(rng(ws))} <small>of ${tot}</small></div><div class="s">cells in which brainsort is the fastest stable sort, across ${measStable.length} machine${measStable.length === 1 ? '' : 's'}; ${esc(rng(wa))} of ${tot} against all sorts. Per machine below.</div></div>`);
+    tiles.push(`<div class="tile"><div class="k">Wall time <span class="tag">measured</span></div><div class="v">${esc(rng(ws))} <small>of ${tot}</small></div><div class="s">cells in which brainsort is the fastest stable sort at n = ${fmtN(nt)}, across ${measStable.length} machine${measStable.length === 1 ? '' : 's'}; ${esc(rng(wa))} of ${tot} against all sorts. Per machine below.</div></div>`);
   }
   document.getElementById('glance-tiles').innerHTML = tiles.join('');
   const r1 = detRow(n, 'int32', 'random', DATA.candidate), rp = detRow(n, 'int32', 'random', 'orlp::pdqsort_branchless');
@@ -1015,17 +1089,19 @@ function renderGlance() {
     `brainsort is a <b>stable</b> sort that avoids comparing keys wherever the key type allows it, and does less work when the input already has structure. ` +
     `On random keys it moves a fraction of the bytes a merge sort or a quicksort moves${r1 && rp ? ` (${bytes(DET.get(r1, 'traffic'))} against ${bytes(DET.get(rp, 'traffic'))} for branchless pdqsort on ${fmtN(n)} random int32 keys)` : ''} and makes almost no comparisons. ` +
     `It pays for that with scratch memory of about half the array, and it does not win everywhere: on input that is already sorted or has only a handful of distinct values, the adaptive comparison sorts finish in one pass and brainsort’s scout pass costs a little extra. Every such case is on this page.`;
-  document.getElementById('glance-note').textContent = `The four tiles count every key type and every input pattern at n = ${fmtN(n)}: ${cells} cells. Change the size above to see another. A cell counts as a win when brainsort is best or tied.`;
+  document.getElementById('glance-note').textContent = `The tiles count every key type and every input pattern: ${cells} cells at n = ${fmtN(n)}${n !== nt ? ` for the deterministic numbers (no instrumented run at ${fmtN(nt)} in this build of the page)` : ''}. Change the size in the controls below to see another. A cell counts as a win when brainsort is best or tied.`;
 }
 
 // ---- the deterministic section --------------------------------------------------------
 function renderDet() {
-  const m = detMetric(), n = state.n;
+  const m = detMetric(), n = detN();
+  document.getElementById('det-fallback').innerHTML = n === state.n ? '' :
+    `<div class="callout warn">No instrumented run at ${fmtN(state.n)} elements is in this build of the page (the CI build adds one, about ten minutes of counting). The deterministic numbers below are at ${fmtN(n)}; the measured section has the ${fmtN(state.n)} timing.</div>`;
   document.getElementById('det-metric-note').textContent = m.plain + ' Lower is better.';
   const sc = score((t, d) => detGet(n, t, d));
-  tiles(document.getElementById('det-tiles'), m, sc, '');
-  document.getElementById('det-heat-note').textContent = `${m.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s, at n = ${fmtN(n)}. Above 1 brainsort is ahead (blue), below 1 behind (red), within 5% a tie (grey). Hover a cell for the numbers.`;
-  heat(document.getElementById('det-heat'), m, (t, d) => detGet(n, t, d), 'det');
+  tiles(document.getElementById('det-tiles'), m, sc, '', n);
+  document.getElementById('det-heat-note').textContent = `${m.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s, at n = ${fmtN(n)}. Hover a cell for the numbers.`;
+  heat(document.getElementById('det-heat'), m, (t, d) => detGet(n, t, d), 'det', n);
   document.getElementById('det-sizes-note').textContent = `${m.label} divided by the number of elements, as the input grows. A flat line is linear work; a rising line is the n log n of a comparison sort or a cache effect. Every size has its own instrumented run.`;
   sizesCharts(document.getElementById('det-sizes'), m, (nn, t, a) => { const r = detRow(nn, t, state.detDs, a); return r ? DET.get(r, state.det) : null; }, `${state.detDs} input`);
   const dd = DATA.datasets.find(d => d.name === state.detBarD);
@@ -1055,9 +1131,9 @@ function renderMeas() {
   document.getElementById('meas-metric-note').textContent = mm.plain + ' Lower is better.';
   const n = state.n;
   const sc = score((t, d) => timGet(p.id, n, t, d, mm.key));
-  tiles(document.getElementById('meas-tiles'), mm, sc, p.label);
-  document.getElementById('meas-heat-note').textContent = `${mm.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s on ${p.label}, n = ${fmtN(n)}. Above 1 brainsort is ahead (blue), below 1 behind (red), within 5% a tie (grey).`;
-  heat(document.getElementById('meas-heat'), mm, (t, d) => timGet(p.id, n, t, d, mm.key), 'meas');
+  tiles(document.getElementById('meas-tiles'), mm, sc, p.label, n);
+  document.getElementById('meas-heat-note').textContent = `${mm.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s on ${p.label}, n = ${fmtN(n)}. Hover a cell for the numbers.`;
+  heat(document.getElementById('meas-heat'), mm, (t, d) => timGet(p.id, n, t, d, mm.key), 'meas', n);
   document.getElementById('meas-sizes-note').textContent = `${mm.label} per element as the input grows, on ${p.label}. Small inputs sit in the cache and cost few nanoseconds per element; large ones pay for memory bandwidth.`;
   sizesCharts(document.getElementById('meas-sizes'), mm, (nn, t, a) => timGet(p.id, nn, t, state.measDs, mm.key)(a), `${state.measDs} input, ${p.label}`);
   const dd = DATA.datasets.find(d => d.name === state.measBarD);
@@ -1095,7 +1171,7 @@ function renderApi() {
     `<div class="tile"><div class="k">Biggest win</div><div class="v">${best ? best.c.ratio.toFixed(1) + 'x faster' : 'none'}</div><div class="s">${best ? `than ${esc(best.c.opp)} on ${esc(best.t)} ${esc(best.d)} (${best.c.b.toFixed(3)} vs ${best.c.o.toFixed(3)} ms)` : 'brainsort::sort is never ahead here'}</div></div>` +
     `<div class="tile"><div class="k">Worst loss</div><div class="v">${worst ? (1 / worst.c.ratio).toFixed(2) + 'x slower' : 'none'}</div><div class="s">${worst ? `than ${esc(worst.c.opp)} on ${esc(worst.t)} ${esc(worst.d)} (${worst.c.b.toFixed(3)} vs ${worst.c.o.toFixed(3)} ms)` : 'fastest or tied in every cell'}</div></div>` :
     '<div class="tile empty">nothing measured at this size on this machine</div>';
-  document.getElementById('api-heat-note').textContent = `Wall time at n = ${fmtN(n)} on ${p.label}: the fastest of the three others divided by brainsort::sort. Above 1 brainsort::sort is faster (blue), below 1 slower (red).`;
+  document.getElementById('api-heat-note').textContent = `Wall time at n = ${fmtN(n)} on ${p.label}: the fastest of the three others divided by brainsort::sort.`;
   let h = '<thead><tr><th>input</th>' + A.types.map(t => `<th title="${esc(t.desc)}">${esc(t.name)}</th>`).join('') + '</tr></thead><tbody>';
   for (const d of A.datasets) {
     h += `<tr><td>${esc(d)}</td>` + A.types.map(t => { const c = cmp(apiRow(p.id, t.name, n, d)); return c ? `<td class="cell ${heatClass(c)}" data-tip="api" data-t="${esc(t.name)}" data-d="${esc(d)}"><div>${c.ratio.toFixed(2)}x</div></td>` : '<td class="cell"><div class="muted">–</div></td>'; }).join('') + '</tr>';
@@ -1163,7 +1239,7 @@ function renderAll() {
     if (!detRow(state.n, t.name, d.name, DATA.candidate) && !DATA.platforms.some(p => timRow(p.id, state.n, t.name, d.name, DATA.candidate))) continue;
     const key = t.name + '/' + d.name;
     const det = document.createElement('details'); det.dataset.key = key;
-    det.innerHTML = `<summary>${esc(t.name)} · ${esc(d.name)} · n = ${fmtN(state.n)}<span class="muted">${esc(d.description)}</span></summary><div class="body"></div>`;
+    det.innerHTML = `<summary>${esc(t.name)} · ${esc(d.name)} · n = ${fmtN(state.n)}<span class="muted">${esc(d.description)}</span><span class="hint"></span></summary><div class="body"></div>`;
     det.addEventListener('toggle', () => { det.querySelector('.body').innerHTML = det.open ? allTable(t.name, d.name) : ''; });
     host.appendChild(det);
     if (open.has(key)) det.open = true;
