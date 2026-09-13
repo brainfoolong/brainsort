@@ -2,17 +2,19 @@
 // containers: what a user of brainsort::sort gets, including the cost of
 // building the records and permuting the elements.
 //
-//   brainsort_api_bench                 n = 100k and 1M, 5 repetitions
-//   brainsort_api_bench --quick         n = 100k, 3 repetitions (the CI smoke run)
+//   brainsort_api_bench                 n = 10, 100, 100k and 1M, 5 repetitions
+//   brainsort_api_bench --quick         n = 10, 100 and 100k, 3 repetitions (the CI smoke run)
 //   brainsort_api_bench --max-n 10000000  ten million elements as well
 //   brainsort_api_bench --host TEXT     describe the machine in the stamp
 //
 // Prints a Markdown document: a line for humans, the run stamp of
 // sortbench/stamp.hpp as an HTML comment (scripts/website.py reads it), then
-// one table: median wall time in ms for brainsort::sort, std::sort,
-// std::stable_sort and pdqsort (the branchless partition for arithmetic
-// keys, as pdqsort.h selects on its own) per element type, dataset and
-// size, and the ratio of brainsort to the fastest of the others. The last
+// one table: median wall time in ms of one sort for brainsort::sort,
+// std::sort, std::stable_sort and pdqsort (the branchless partition for
+// arithmetic keys, as pdqsort.h selects on its own) per element type,
+// dataset and size (below 100,000 elements, ceil(100,000/n) copies are
+// sorted back to back and the time divided), and the ratio of brainsort to
+// the fastest of the others. The last
 // rows call brainsort::sort with a comparator, its comparison sort.
 #include "brainsort/brainsort.hpp"
 #include "pdqsort/pdqsort.h"
@@ -93,17 +95,36 @@ template <> struct Less<Row> {
     bool operator()(const Row& a, const Row& b) const { return a.key < b.key; }
 };
 
+// The size the repetition scheme is defined at: below it, batch_for(n)
+// independent copies are sorted back to back in one timed region and the
+// time per sort is reported, so that ten elements are not timed as one call
+// of a few nanoseconds.
+constexpr size_t kReferenceN = 100000;
+size_t batch_for(size_t n) { return n == 0 || n >= kReferenceN ? 1 : (kReferenceN + n - 1) / n; }
+
+// Milliseconds with three decimals, and more below one ms so that a sort of
+// ten elements keeps three significant digits.
+std::string fmt_ms(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, v >= 1 ? "%.3f" : v >= 0.01 ? "%.4f" : "%.6f", v);
+    return buf;
+}
+
+// The median wall time of one sort in ms over `reps` repetitions; every
+// result is checked.
 template <class T, class F>
 double median_ms(const std::vector<T>& input, int reps, F&& sorter) {
+    const size_t batch = batch_for(input.size());
     std::vector<double> t;
-    std::vector<T>      work(input.size());
+    std::vector<std::vector<T>> work(batch, std::vector<T>(input.size()));
     for (int r = 0; r < reps; ++r) {
-        std::copy(input.begin(), input.end(), work.begin());
+        for (auto& w : work) std::copy(input.begin(), input.end(), w.begin());
         const auto t0 = std::chrono::steady_clock::now();
-        sorter(work);
+        for (auto& w : work) sorter(w);
         const auto t1 = std::chrono::steady_clock::now();
-        t.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
-        if (!std::is_sorted(work.begin(), work.end(), Less<T>{})) { std::fprintf(stderr, "not sorted!\n"); std::exit(1); }
+        t.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count() / static_cast<double>(batch));
+        for (const auto& w : work)
+            if (!std::is_sorted(w.begin(), w.end(), Less<T>{})) { std::fprintf(stderr, "not sorted!\n"); std::exit(1); }
     }
     std::sort(t.begin(), t.end());
     return t[t.size() / 2];
@@ -130,7 +151,8 @@ void bench_type(const std::vector<size_t>& sizes, int reps, bool comparator = fa
                 else pdqsort(v.begin(), v.end(), Less<T>{});
             });
             const double best = std::min({ss, st, pd});
-            std::printf("| %s%s | %zu | %s | %.3f | %.3f | %.3f | %.3f | %.2fx |\n", Gen<T>::name(), comparator ? " by comparator" : "", n, ds, bs, ss, st, pd, best / bs);
+            std::printf("| %s%s | %zu | %s | %s | %s | %s | %s | %.2fx |\n", Gen<T>::name(), comparator ? " by comparator" : "", n, ds,
+                        fmt_ms(bs).c_str(), fmt_ms(ss).c_str(), fmt_ms(st).c_str(), fmt_ms(pd).c_str(), best / bs);
             std::fflush(stdout);
         }
     }
@@ -150,11 +172,11 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "usage: brainsort_api_bench [--quick] [--max-n N] [--host TEXT]\n"); return 2; }
     }
     std::vector<size_t> sizes;
-    for (size_t n : {size_t{100000}, size_t{1000000}, size_t{10000000}})
-        if (n <= max_n && (!quick || n == 100000)) sizes.push_back(n);
+    for (size_t n : {size_t{10}, size_t{100}, size_t{100000}, size_t{1000000}, size_t{10000000}})
+        if (n <= max_n && (!quick || n <= 100000)) sizes.push_back(n);
     const int reps = quick ? 3 : 5;
     const sb::RunStamp stamp = sb::RunStamp::now();
-    std::printf("%s%s. brainsort::sort on a plain std::vector against std::sort, std::stable_sort and pdqsort; median of %d runs, wall ms. Generated by brainsort_api_bench.\n",
+    std::printf("%s%s. brainsort::sort on a plain std::vector against std::sort, std::stable_sort and pdqsort; median of %d runs, wall ms per sort (below 100,000 elements, ceil(100,000/n) copies are sorted back to back). Generated by brainsort_api_bench.\n",
                 stamp.summary().c_str(), host.empty() ? "" : (", " + host).c_str(), reps);
     std::printf("<!-- stamp {\n  \"host\": %s,\n%s,\n  \"reps\": %d\n} -->\n\n", sb::json_str(host).c_str(), stamp.json_fields().c_str(), reps);
     std::printf("| type | n | dataset | brainsort::sort | std::sort | std::stable_sort | pdqsort | vs best |\n");

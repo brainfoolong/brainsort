@@ -206,23 +206,56 @@ impl<K, A: Alloc> Drop for KeyBuf<K, A> {
 
 // ---- the permutation --------------------------------------------------------------------------
 
-/// Applies the permutation the sorted records describe: out[i] = in[index(rec[i])].
+/// An array of n element indices, read and written by position: the index
+/// word of sorted records, or a plain index array.
+pub(crate) trait Indices: Copy {
+    /// The index at position i. Safety: i must be below the array's length.
+    unsafe fn index(self, i: usize) -> u32;
+    /// Sets the index at position i. Safety: as above.
+    unsafe fn set_index(self, i: usize, v: u32);
+}
+impl<R: Record> Indices for *mut R {
+    #[inline(always)]
+    unsafe fn index(self, i: usize) -> u32 {
+        // SAFETY: the caller's.
+        unsafe { (*self.add(i)).index() }
+    }
+    #[inline(always)]
+    unsafe fn set_index(self, i: usize, v: u32) {
+        // SAFETY: the caller's.
+        unsafe { (*self.add(i)).set_index(v) }
+    }
+}
+impl Indices for *mut u32 {
+    #[inline(always)]
+    unsafe fn index(self, i: usize) -> u32 {
+        // SAFETY: the caller's.
+        unsafe { *self.add(i) }
+    }
+    #[inline(always)]
+    unsafe fn set_index(self, i: usize, v: u32) {
+        // SAFETY: the caller's.
+        unsafe { *self.add(i) = v }
+    }
+}
+
+/// Applies the permutation the sorted indices describe: out[i] = in[ix[i]].
 /// In place, following cycles, with bitwise moves; works for any type.
-fn permute_cycles<T, R: Record>(v: &mut [T], rec: *mut R, n: usize) {
+fn permute_cycles<T, I: Indices>(v: &mut [T], ix: I, n: usize) {
     let first = v.as_mut_ptr();
     for i in 0..n {
-        // SAFETY (whole loop): every index is a record index below n; each
-        // element is read once and written once per cycle, so no element is
-        // duplicated or lost even though the moves are bitwise.
+        // SAFETY (whole loop): every index is below n; each element is read
+        // once and written once per cycle, so no element is duplicated or
+        // lost even though the moves are bitwise.
         unsafe {
-            if (*rec.add(i)).index() as usize == i {
+            if ix.index(i) as usize == i {
                 continue;
             }
             let tmp = ptr::read(first.add(i));
             let mut j = i;
             loop {
-                let k = (*rec.add(j)).index() as usize;
-                (*rec.add(j)).set_index(j as u32);
+                let k = ix.index(j) as usize;
+                ix.set_index(j, j as u32);
                 if k == i {
                     ptr::write(first.add(j), tmp);
                     break;
@@ -238,15 +271,15 @@ fn permute_cycles<T, R: Record>(v: &mut [T], rec: *mut R, n: usize) {
 /// When the input was nearly sorted (`sparse`), most elements are already
 /// in their final place and the cycle walk moves only the others, so it is
 /// taken if at most an eighth are out of place.
-fn permute<T, R: Record, A: Alloc>(v: &mut [T], rec: *mut R, n: usize, sparse: bool) {
+fn permute<T, I: Indices, A: Alloc>(v: &mut [T], ix: I, n: usize, sparse: bool) {
     if sparse {
         let mut moved = 0usize;
         for i in 0..n {
-            // SAFETY: i < n records.
-            moved += (unsafe { (*rec.add(i)).index() } as usize != i) as usize;
+            // SAFETY: i < n indices.
+            moved += (unsafe { ix.index(i) } as usize != i) as usize;
         }
         if moved <= n / 8 {
-            permute_cycles(v, rec, n);
+            permute_cycles(v, ix, n);
             return;
         }
     }
@@ -254,19 +287,19 @@ fn permute<T, R: Record, A: Alloc>(v: &mut [T], rec: *mut R, n: usize, sparse: b
         if let Ok(tmp) = Buf::<T, A>::new(n) {
             let t = tmp.ptr();
             let first = v.as_mut_ptr();
-            // SAFETY: t has n slots; every record index is below n and the
-            // indices are a permutation, so each element is copied out once
-            // and back once.
+            // SAFETY: t has n slots; every index is below n and the indices
+            // are a permutation, so each element is copied out once and back
+            // once.
             unsafe {
                 for i in 0..n {
-                    ptr::copy_nonoverlapping(first.add((*rec.add(i)).index() as usize), t.add(i), 1);
+                    ptr::copy_nonoverlapping(first.add(ix.index(i) as usize), t.add(i), 1);
                 }
                 ptr::copy_nonoverlapping(t, first, n);
             }
             return;
         }
     }
-    permute_cycles(v, rec, n);
+    permute_cycles(v, ix, n);
 }
 
 // ---- the prescan --------------------------------------------------------------------------------
@@ -606,7 +639,7 @@ fn sort_records_as<T, P: Proj<T>, A: Alloc, R: Record>(v: &mut [T], proj: &mut P
             unsafe { ptr::write(first.add(i), double_of(&*(rec.add(i) as *const Rec64))) };
         }
     } else {
-        permute::<T, R, A>(v, rec, n, sparse);
+        permute::<T, *mut R, A>(v, rec, n, sparse);
     }
     drop(keys);
     Ok(true)
@@ -844,8 +877,9 @@ pub(crate) fn ord3(o: Ordering) -> i32 {
 }
 
 /// Sorts `v` by a comparator: sorted, reversed and nearly sorted input is
-/// handled on the elements, everything else goes to the standard library's
-/// stable sort.
+/// handled on the elements; everything else is a comparison sort, the
+/// standard library's stable sort, on the elements themselves up to 16
+/// bytes and through an index array beyond that.
 pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut cmp: F) {
     let n = v.len();
     if n < 2 {
@@ -863,8 +897,50 @@ pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut 
         reverse_stable(v, &s, |a, b| cmp(a, b) == Ordering::Equal);
         return;
     }
-    if s.shape == Shape::NearlySorted && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
+    let nearly = s.shape == Shape::NearlySorted;
+    if nearly && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
         return;
     }
+    if core::mem::size_of::<T>() > ELEMENT_ROUTE_MAX && n <= u32::MAX as usize {
+        // The element route above tried the displaced elements in place up
+        // to COMPARATOR_ROUTE_MAX bytes and gave up; larger elements get
+        // that route on the indices.
+        let try_displaced = nearly && core::mem::size_of::<T>() > COMPARATOR_ROUTE_MAX;
+        if sort_by_indices::<T, A, F>(v, &mut cmp, nearly, try_displaced) {
+            return;
+        }
+    }
     v.sort_by(cmp);
+}
+
+/// The comparator sort of elements over 16 bytes: an array of the indices
+/// 0..n is sorted by the order of the elements it points to (the
+/// displaced-element route first when asked, the standard library's stable
+/// sort otherwise) and the elements are permuted once. The passes move 4
+/// bytes per element instead of the element, and a comparator that panics
+/// leaves the slice untouched, because nothing moves before the last
+/// comparison. False, with the slice untouched, if the index array cannot
+/// be allocated.
+fn sort_by_indices<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: &mut F, sparse: bool, try_displaced: bool) -> bool {
+    let n = v.len();
+    let Ok(idx) = Buf::<u32, A>::new(n) else {
+        return false;
+    };
+    let ix = idx.ptr();
+    for i in 0..n {
+        // SAFETY: n slots.
+        unsafe { ptr::write(ix.add(i), i as u32) };
+    }
+    let base = v.as_ptr();
+    // SAFETY: base points at n elements that are only read (through
+    // indices below n) until the permutation, after the last comparison.
+    let mut order = |i: &u32, j: &u32| unsafe { cmp(&*base.add(*i as usize), &*base.add(*j as usize)) };
+    // SAFETY: ix holds n initialised indices, owned by `idx` for the whole
+    // function.
+    let indices = unsafe { core::slice::from_raw_parts_mut(ix, n) };
+    if !(try_displaced && sort_displaced_elements::<u32, A, _>(indices, |i, j| ord3(order(i, j)))) {
+        indices.sort_by(order);
+    }
+    permute::<T, *mut u32, A>(v, ix, n, sparse);
+    true
 }

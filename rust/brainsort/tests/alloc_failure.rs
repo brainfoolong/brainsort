@@ -3,7 +3,7 @@
 //! and the result must still be sorted, stable and leak nothing.
 #![cfg(feature = "__internals")]
 mod common;
-use brainsort::internals::{Alloc, AllocError, ByRef, sort_by_key_impl};
+use brainsort::internals::{Alloc, AllocError, ByRef, sort_by_impl, sort_by_key_impl};
 use common::*;
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -71,6 +71,47 @@ fn case<K: Gen + Clone + Natural + brainsort::Key + std::fmt::Debug>(name: &str,
         verify(&v, n, &format!("{name}/{pattern} allocation {k} of {total} failed"));
         assert_eq!(LIVE.with(|l| l.get()), 0, "{name}/{pattern} allocation {k} failed: scratch leaked");
     }
+}
+
+/// The comparator sort of elements over 16 bytes: the index array, then
+/// the permutation buffer; each failure falls back (to the standard
+/// library's sort, to the cycle walk) and the result is the same.
+fn comparator_case<const P: usize>(pattern: &str, n: usize) {
+    #[derive(Clone, Copy)]
+    struct Wide<const P: usize> {
+        key: i32,
+        id: u32,
+        _payload: [u8; P],
+    }
+    let n = if cfg!(miri) { n / 10 } else { n };
+    let mut pool = Pool;
+    let input: Vec<Wide<P>> = make_input::<i32>(pattern, n, 37 + n as u64, &mut pool).iter().map(|t| Wide { key: t.key, id: t.id, _payload: [0; P] }).collect();
+    let check = |v: &[Wide<P>], ctx: &str| {
+        let tagged: Vec<Tagged<i32>> = v.iter().map(|w| Tagged { key: w.key, id: w.id }).collect();
+        verify(&tagged, n, ctx);
+    };
+    reset(usize::MAX);
+    let mut v = input.clone();
+    sort_by_impl::<_, FailAlloc, _>(&mut v, |a, b| a.key.cmp(&b.key));
+    check(&v, &format!("comparator {P}/{pattern} baseline"));
+    let total = COUNT.with(|c| c.get());
+    assert_eq!(LIVE.with(|l| l.get()), 0, "comparator {P}/{pattern}: scratch leaked");
+    assert!(total > 0, "comparator {P}/{pattern}: the baseline did not allocate");
+    for k in 0..=total {
+        reset(k);
+        let mut v = input.clone();
+        sort_by_impl::<_, FailAlloc, _>(&mut v, |a, b| a.key.cmp(&b.key));
+        check(&v, &format!("comparator {P}/{pattern} allocation {k} of {total} failed"));
+        assert_eq!(LIVE.with(|l| l.get()), 0, "comparator {P}/{pattern} allocation {k} failed: scratch leaked");
+    }
+}
+
+#[test]
+fn comparator_allocation_points() {
+    comparator_case::<56>("random", 5000);
+    comparator_case::<56>("few_unique", 5000);
+    comparator_case::<120>("nearly_sorted", 20000);
+    comparator_case::<120>("random", 5000);
 }
 
 #[test]

@@ -49,7 +49,8 @@ be anything: they are permuted once, after the keys were sorted.
   after `+inf`, with it set before `-inf`. A total order, so no input is
   unsafe; it is not `f64::total_cmp`, which orders `-0.0` before `+0.0`.
 - **A comparator** gets the standard library's stable sort, with sorted,
-  reversed and nearly sorted input handled on the elements first.
+  reversed and nearly sorted input handled on the elements first; elements
+  over 16 bytes are sorted through indices and moved once.
 - **Allocation failure** completes the sort through the standard library's
   stable sort with the same order. A key function that panics during the
   first pass leaves the slice unchanged; later, every element is still in

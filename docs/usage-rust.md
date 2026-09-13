@@ -56,8 +56,10 @@ brainsort::sort_by(&mut rows, |a, b| a.name.cmp(&b.name));
 
 A comparator gets a comparison sort: sorted, reversed and nearly sorted
 input is handled on the elements as the key sorts do, everything else is
-the standard library's `slice::sort_by`. Prefer a key whenever the order
-is one; that is where the radix wins are.
+the standard library's `slice::sort_by`, on the elements themselves up to
+16 bytes and on an array of indices beyond that, so the passes move 4
+bytes per element and each element moves once, at the end. Prefer a key
+whenever the order is one; that is where the radix wins are.
 
 ## Keys
 
@@ -104,9 +106,11 @@ directly.
 
 - **Memory.** About 1.5 small records per element while sorting (8 bytes
   for keys up to 32 bits, 16 bytes up to 64 bits or a string, more for
-  composites), plus one element per element for the permutation. Sorted
-  and reversed input, and nearly sorted elements of up to 16 bytes (64
-  with a comparator), need no memory beyond the displaced elements.
+  composites), plus one element per element for the permutation; a
+  comparator on elements over 16 bytes uses 4 bytes per element for the
+  indices instead of the records. Sorted and reversed input, and nearly
+  sorted elements of up to 16 bytes (64 with a comparator), need no
+  memory beyond the displaced elements.
 - **Memory is kept.** Freed blocks of 64 KiB and more are kept, up to
   32 MiB, for the next sort of the process. `set_memory_cache_limit(bytes)`
   changes the limit (0 disables the cache); `release_memory()` frees the
@@ -116,7 +120,9 @@ directly.
   library. A key function that panics during the first pass over the keys
   leaves the slice unchanged; one that panics later (the nearly sorted
   route compares elements again), or a comparator that panics, leaves
-  every element in the slice, exactly once, in an unspecified order.
+  every element in the slice, exactly once, in an unspecified order; the
+  comparison sort of elements over 16 bytes runs on indices and moves
+  nothing before its last comparison.
 - **Limits.** At most 2^32 - 1 elements per call and strings shorter than
   2^32 bytes; beyond either the call goes to the standard library's
   stable sort.

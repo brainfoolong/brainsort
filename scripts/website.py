@@ -17,7 +17,7 @@ Inputs, all discovered in the results directory:
   counts*.csv      the deterministic numbers (sortbench --counts-only): one
                    row per (size, key type, dataset, algorithm), the same on
                    every machine. counts.csv is the golden file of the test
-                   suite (1,000 to 1,000,000); counts-<n>.csv files add
+                   suite (10 to 1,000,000); counts-<n>.csv files add
                    further sizes, e.g. COUNTS_SIZES=10000000 scripts/counts.sh.
                    The C++ page's deterministic section.
   rust-counts*.csv the deterministic numbers of the Rust sorts as shipped
@@ -1019,6 +1019,8 @@ const hasTiming = (pid, n) => TIM.rows.some(r => r[0] === pid && r[1] === n);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtN = n => n >= 1e6 ? (n / 1e6) + ' M' : n >= 1e3 ? (n / 1e3) + ' k' : String(n);
 const fmtNum = n => Math.round(n).toLocaleString('en-US');
+// Milliseconds as the API benchmarks print them: three decimals, more below one ms so that a sort of ten elements keeps three significant digits.
+const fmtMs = v => v >= 1 ? v.toFixed(3) : v >= 0.01 ? v.toFixed(4) : v.toFixed(6);
 function compact(v) { if (v == null) return 'n/a'; if (v >= 1e9) return (v / 1e9).toFixed(2) + ' G'; if (v >= 1e6) return (v / 1e6).toFixed(2) + ' M'; if (v >= 1e3) return (v / 1e3).toFixed(1) + ' k'; return String(Math.round(v * 10) / 10); }
 function bytes(v) { if (v == null) return 'n/a'; if (v === 0) return '0'; if (v < 1024) return Math.round(v) + ' B'; if (v < 1048576) return (v / 1024).toFixed(1) + ' KiB'; if (v < 1073741824) return (v / 1048576).toFixed(2) + ' MiB'; return (v / 1073741824).toFixed(2) + ' GiB'; }
 function ns(v) { if (v == null) return 'n/a'; if (v < 1e3) return v.toFixed(0) + ' ns'; if (v < 1e6) return (v / 1e3).toFixed(v < 1e4 ? 2 : 1) + ' µs'; if (v < 1e9) return (v / 1e6).toFixed(v < 1e7 ? 3 : 2) + ' ms'; return (v / 1e9).toFixed(2) + ' s'; }
@@ -1512,8 +1514,8 @@ function renderBench() {
   const best = wins.filter(x => x.c.ratio > 1.05).sort((a, b) => b.c.ratio - a.c.ratio)[0], worst = cs.filter(x => !x.c.win).sort((a, b) => a.c.ratio - b.c.ratio)[0];
   document.getElementById('api-tiles').innerHTML = cs.length ?
     `<div class="tile ${wins.length * 2 >= cs.length ? 'win' : 'loss'}"><div class="k">Fastest or tied · n = ${fmtN(n)}</div><div class="v">${wins.length} <small>of ${cs.length}</small></div><div class="s">cells where brainsort::sort beats or ties every other ${LANG_NAME[LANG]} sort measured; ${winsSt.length} of ${cs.length} against ${esc(B.opponents[B.stable])} alone, the other stable sort</div></div>` +
-    `<div class="tile"><div class="k">Biggest win</div><div class="v">${best ? best.c.ratio.toFixed(1) + 'x faster' : 'none'}</div><div class="s">${best ? `than ${esc(best.c.opp)} on ${esc(best.t)} ${esc(best.d)} (${best.c.b.toFixed(3)} vs ${best.c.o.toFixed(3)} ms)` : 'brainsort::sort is never ahead here'}</div></div>` +
-    `<div class="tile"><div class="k">Worst loss</div><div class="v">${worst ? (1 / worst.c.ratio).toFixed(2) + 'x slower' : 'none'}</div><div class="s">${worst ? `than ${esc(worst.c.opp)} on ${esc(worst.t)} ${esc(worst.d)} (${worst.c.b.toFixed(3)} vs ${worst.c.o.toFixed(3)} ms)` : 'fastest or tied in every cell'}</div></div>` :
+    `<div class="tile"><div class="k">Biggest win</div><div class="v">${best ? best.c.ratio.toFixed(1) + 'x faster' : 'none'}</div><div class="s">${best ? `than ${esc(best.c.opp)} on ${esc(best.t)} ${esc(best.d)} (${fmtMs(best.c.b)} vs ${fmtMs(best.c.o)} ms)` : 'brainsort::sort is never ahead here'}</div></div>` +
+    `<div class="tile"><div class="k">Worst loss</div><div class="v">${worst ? (1 / worst.c.ratio).toFixed(2) + 'x slower' : 'none'}</div><div class="s">${worst ? `than ${esc(worst.c.opp)} on ${esc(worst.t)} ${esc(worst.d)} (${fmtMs(worst.c.b)} vs ${fmtMs(worst.c.o)} ms)` : 'fastest or tied in every cell'}</div></div>` :
     '<div class="tile empty">nothing measured at this size on this machine</div>';
   document.getElementById('api-heat-note').textContent = `Wall time at n = ${fmtN(n)} on ${p.label}: the fastest other ${LANG_NAME[LANG]} sort divided by brainsort::sort. Hover a cell for the numbers.`;
   let h = '<thead><tr><th>input</th>' + B.types.map(t => `<th title="${esc(t.desc)}">${esc(t.name)}</th>`).join('') + '</tr></thead><tbody>';
@@ -1527,7 +1529,7 @@ function renderBench() {
     for (const d of B.datasets) {
       const r = benchRow(p.id, t.name, n, d); if (!r) continue;
       const vals = [BT.get(r, 'bs'), ...BT.get(r, 'others')], best = Math.min(...vals.filter(v => v != null));
-      rows += `<tr><td>${esc(d)}</td>` + vals.map(v => v == null ? '<td class="muted">n/a</td>' : `<td class="${v === best ? 'best' : ''}">${v.toFixed(3)}<span class="rel">${v === best ? 'best' : (v / best).toFixed(2) + 'x'}</span></td>`).join('') + '</tr>';
+      rows += `<tr><td>${esc(d)}</td>` + vals.map(v => v == null ? '<td class="muted">n/a</td>' : `<td class="${v === best ? 'best' : ''}">${fmtMs(v)}<span class="rel">${v === best ? 'best' : (v / best).toFixed(2) + 'x'}</span></td>`).join('') + '</tr>';
     }
     if (rows) t2 += `<h4>${esc(t.name)} · ${esc(t.desc)} · ms</h4><div class="tablewrap"><table class="data"><thead><tr><th>input</th><th><span class="sw" style="background:${gcolor('candidate')}"></span>brainsort::sort</th>${B.opponents.map(o => `<th><span class="sw" style="background:${gcolor('upstream')}"></span>${esc(o)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
@@ -1554,7 +1556,7 @@ function renderBench() {
         const cb = cT.get(cr, 'bs'), rb = rT.get(rr, 'bs'), ratio = rb / cb;
         const co = bestOther(cT, cB, cr), ro = bestOther(rT, rB, rr);
         const cls = Math.abs(Math.log2(ratio)) < 0.07 ? 'n0' : ratio < 1 ? (ratio < 0.5 ? 'w3' : ratio < 0.8 ? 'w2' : 'w1') : (ratio > 2 ? 'l3' : ratio > 1.25 ? 'l2' : 'l1');
-        rows += `<tr><td>${esc(d)}</td><td>${cb.toFixed(3)}</td><td>${rb.toFixed(3)}</td><td class="cell ${cls}"><div>${ratio.toFixed(2)}x</div></td><td>${co ? co[1].toFixed(3) + '<span class="rel">' + esc(co[0]) + '</span>' : 'n/a'}</td><td>${ro ? ro[1].toFixed(3) + '<span class="rel">' + esc(ro[0]) + '</span>' : 'n/a'}</td></tr>`;
+        rows += `<tr><td>${esc(d)}</td><td>${fmtMs(cb)}</td><td>${fmtMs(rb)}</td><td class="cell ${cls}"><div>${ratio.toFixed(2)}x</div></td><td>${co ? fmtMs(co[1]) + '<span class="rel">' + esc(co[0]) + '</span>' : 'n/a'}</td><td>${ro ? fmtMs(ro[1]) + '<span class="rel">' + esc(ro[0]) + '</span>' : 'n/a'}</td></tr>`;
         cells++;
       }
       if (rows) pr += `<tbody><tr><th colspan="6" style="text-align:left">${esc(LANG === 'cpp' ? t.name : ot)} · ${esc(LANG === 'cpp' ? ot : t.name)}</th></tr>${rows}</tbody>`;
@@ -1617,7 +1619,7 @@ function apiTable(t, d) {
   for (const p of BENCH.platforms) {
     const r = benchRow(p.id, bt, n, d); if (!r) continue;
     const vals = [BT.get(r, 'bs'), ...BT.get(r, 'others')], best = Math.min(...vals.filter(v => v != null));
-    rows += `<tr><td class="muted">${esc(p.label)}</td>` + vals.map(v => `<td class="${v === best ? 'best' : ''}">${v == null ? '<span class="muted">n/a</span>' : v.toFixed(3)}</td>`).join('') + '</tr>';
+    rows += `<tr><td class="muted">${esc(p.label)}</td>` + vals.map(v => `<td class="${v === best ? 'best' : ''}">${v == null ? '<span class="muted">n/a</span>' : fmtMs(v)}</td>`).join('') + '</tr>';
   }
   if (!rows) return '';
   return `<h4>${esc(LANG === 'cpp' ? 'the library' : 'the crate')} on plain vectors · ${esc(bt)} · wall ms</h4><div class="tablewrap"><table class="data"><thead><tr><th>machine</th><th>brainsort::sort</th>${BENCH.opponents.map(o => `<th>${esc(o)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -1650,7 +1652,7 @@ document.addEventListener('mouseover', e => {
   const k = g.dataset.tip;
   if (k === 'det') { const m = detMetric(), get = detGet(state.n, g.dataset.t, g.dataset.d), c = compareCell(get); showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.n)} · ${esc(m.label.toLowerCase())}</b><table>${oppRows(get, m)}${c ? `<tr><td>brainsort ${c.win ? 'ahead' : 'behind'} of the best other sort by</td><td>${c.ratio === Infinity || c.ratio === 0 ? 'all' : (c.win ? c.ratio : 1 / c.ratio).toFixed(2) + 'x'}</td></tr>` : ''}</table>`); }
   else if (k === 'meas') { const m = measMetric(), get = timGet(state.p, state.n, g.dataset.t, g.dataset.d, m.key), c = compareCell(get); showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.n)} · ${esc(m.label.toLowerCase())} on ${esc(PLAT[state.p].label)}</b><table>${oppRows(get, m)}${c ? `<tr><td>brainsort ${c.win ? 'ahead' : 'behind'} by</td><td>${(c.win ? c.ratio : 1 / c.ratio).toFixed(2) + 'x'}</td></tr>` : ''}</table>`); }
-  else if (k === 'api') { const r = benchRow(state.benchP, g.dataset.t, state.benchN, g.dataset.d); if (r) showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.benchN)}</b><table><tr><td>brainsort::sort</td><td>${BT.get(r, 'bs').toFixed(3)} ms</td></tr>${BT.get(r, 'others').map((v, i) => `<tr><td>${esc(BENCH.opponents[i])}</td><td>${v == null ? 'n/a' : v.toFixed(3) + ' ms'}</td></tr>`).join('')}</table>`); }
+  else if (k === 'api') { const r = benchRow(state.benchP, g.dataset.t, state.benchN, g.dataset.d); if (r) showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.benchN)}</b><table><tr><td>brainsort::sort</td><td>${fmtMs(BT.get(r, 'bs'))} ms</td></tr>${BT.get(r, 'others').map((v, i) => `<tr><td>${esc(BENCH.opponents[i])}</td><td>${v == null ? 'n/a' : fmtMs(v) + ' ms'}</td></tr>`).join('')}</table>`); }
   else if (k === 'pt') { const m = g.closest('#det-sizes') ? detMetric() : measMetric(); showTip(`<b>${esc(g.dataset.a)} · ${esc(g.dataset.t)} · n = ${fmtN(+g.dataset.n)}</b><table><tr><td>${esc(m.label)} per element</td><td>${esc(perElem(+g.dataset.v, m.per))}</td></tr><tr><td>total</td><td>${esc(m.fmt(+g.dataset.v * +g.dataset.n))}</td></tr></table>`); }
 });
 document.addEventListener('mousemove', e => { if (tip.hidden) return; const pad = 14; let x = e.clientX + pad, y = e.clientY + pad; if (x + tip.offsetWidth > innerWidth - 8) x = e.clientX - tip.offsetWidth - pad; if (y + tip.offsetHeight > innerHeight - 8) y = e.clientY - tip.offsetHeight - pad; tip.style.left = x + 'px'; tip.style.top = y + 'px'; });

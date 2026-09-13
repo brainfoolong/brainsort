@@ -5,11 +5,11 @@
 #
 #   .\scripts\bench.ps1 [sortbench options]      e.g. --reps 11
 #   $env:BENCH_SIZES = "1000 10000 100000 1000000"; $env:BENCH_API_MAX_N = "1000000"; .\scripts\bench.ps1
-#                                                more sizes (an option; the default is one set of 100,000
+#                                                more sizes (an option; the default is 10, 100 and 100,000
 #                                                elements and few repetitions)
 #
 # Environment (same names as bench.sh): BENCH_ID, BENCH_HOST, BENCH_SIZES
-# (default "100000"), BENCH_REPS (default 5), BENCH_API_MAX_N (default: the quick run at 100000), BUILD_DIR (default build-win, built first; a multi-config
+# (default "10 100 100000"), BENCH_REPS (default 5), BENCH_API_MAX_N (default: the quick run at 10, 100 and 100000), BUILD_DIR (default build-win, built first; a multi-config
 # build such as MSVC keeps its binaries in <BUILD_DIR>\Release), BENCH_NO_SITE, BENCH_NO_RUST
 # (skip the Rust port's API benchmark, which runs when cargo is found).
 $ErrorActionPreference = "Stop"
@@ -22,7 +22,7 @@ $sb  = Join-Path $bin "sortbench.exe"
 $api = Join-Path $bin "brainsort_api_bench.exe"
 $id = if ($env:BENCH_ID) { $env:BENCH_ID } else { (& $sb --print-id).Trim() }
 $sizes = @()
-foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "100000" }) -split " ")) { $sizes += @("--n", $n) }
+foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "10 100 100000" }) -split " ")) { $sizes += @("--n", $n) }
 $reps = if ($env:BENCH_REPS) { $env:BENCH_REPS } else { "5" }
 $hostText = if ($env:BENCH_HOST) { $env:BENCH_HOST } else { "" }
 $apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "100000" }

@@ -129,17 +129,39 @@ pub fn make<T: BenchKey>(ds: &str, n: usize, seed: u64) -> Vec<T> {
 
 /// Median wall time in ms of `reps` runs of `sorter` on a copy of `input`,
 /// each result checked for order.
+/// The size the repetition scheme is defined at: below it, `batch_for(n)`
+/// independent copies are sorted back to back in one timed region and the
+/// time per sort is reported, so that ten elements are not timed as one
+/// call of a few nanoseconds.
+pub const REFERENCE_N: usize = 100_000;
+pub fn batch_for(n: usize) -> usize {
+    if n == 0 || n >= REFERENCE_N {
+        1
+    } else {
+        REFERENCE_N.div_ceil(n)
+    }
+}
+
+/// The median wall time of one sort in ms over `reps` repetitions; every
+/// result is checked.
 pub fn median_ms<T: BenchKey>(input: &[T], reps: usize, mut sorter: impl FnMut(&mut Vec<T>)) -> f64 {
+    let batch = batch_for(input.len());
     let mut times = Vec::with_capacity(reps);
-    let mut work: Vec<T> = Vec::with_capacity(input.len());
+    let mut work: Vec<Vec<T>> = (0..batch).map(|_| Vec::with_capacity(input.len())).collect();
     for _ in 0..reps {
-        work.clear();
-        work.extend_from_slice(input);
+        for w in &mut work {
+            w.clear();
+            w.extend_from_slice(input);
+        }
         let t0 = Instant::now();
-        sorter(&mut work);
+        for w in &mut work {
+            sorter(w);
+        }
         let dt = t0.elapsed();
-        assert!(work.windows(2).all(|w| !T::less(&w[1], &w[0])), "not sorted!");
-        times.push(dt.as_secs_f64() * 1e3);
+        for w in &work {
+            assert!(w.windows(2).all(|p| !T::less(&p[1], &p[0])), "not sorted!");
+        }
+        times.push(dt.as_secs_f64() * 1e3 / batch as f64);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     times[times.len() / 2]
@@ -289,13 +311,25 @@ pub fn run_all(sizes: &[usize], reps: usize, mut log: impl FnMut(&Cell)) -> Vec<
     out
 }
 
+/// Milliseconds with three decimals, and more below one ms so that a sort
+/// of ten elements keeps three significant digits.
+pub fn fmt_ms(v: f64) -> String {
+    if v >= 1.0 {
+        format!("{v:.3}")
+    } else if v >= 0.01 {
+        format!("{v:.4}")
+    } else {
+        format!("{v:.6}")
+    }
+}
+
 /// One line of the Markdown table.
 pub fn cell_line(c: &Cell) -> String {
     let best = c.others.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
-    let mut s = format!("| {} | {} | {} | {:.3} |", c.ty, c.n, c.ds, c.brainsort);
+    let mut s = format!("| {} | {} | {} | {} |", c.ty, c.n, c.ds, fmt_ms(c.brainsort));
     for o in &c.others {
         match o {
-            Some(v) => s.push_str(&format!(" {v:.3} |")),
+            Some(v) => s.push_str(&format!(" {} |", fmt_ms(*v))),
             None => s.push_str(" n/a |"),
         }
     }

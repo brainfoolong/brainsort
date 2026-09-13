@@ -6,6 +6,13 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- `sort_by` sorts elements over 16 bytes through an array of indices and
+  permutes them once, as the C++ comparator overload does: the comparison
+  sort moves 4 bytes per element instead of the element, and a comparator
+  that panics there leaves the slice unchanged. 64-byte rows by comparator
+  at 100,000 elements (7800X3D): random 5.7 to 2.6 ms on Windows and 4.2
+  to 2.5 ms on WSL2, few distinct values 3.2 to 1.2 ms and 2.1 to 1.4 ms,
+  from behind `slice::sort_unstable_by` to level with it or ahead.
 - `sort_by` takes the displaced-element route for nearly sorted elements
   of up to 64 bytes, as the C++ comparator overload does; it had stopped
   at 16, the key path's limit, and sent such input to the full sort.

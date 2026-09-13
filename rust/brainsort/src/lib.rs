@@ -162,7 +162,9 @@ pub fn sort_by_key_ref<T, K: Key + ?Sized, F: for<'a> FnMut(&'a T) -> &'a K>(v: 
 
 /// Sorts the slice by a comparator. Stable. Sorted, reversed and nearly
 /// sorted input is handled on the elements as the key sorts do; everything
-/// else is a comparison sort, the standard library's `slice::sort_by`.
+/// else is a comparison sort, the standard library's `slice::sort_by`, on
+/// the elements themselves up to 16 bytes and on an array of indices
+/// beyond that, so that larger elements move once, at the end.
 ///
 /// ```
 /// let mut v = vec![3, 1, 2];

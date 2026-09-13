@@ -7,15 +7,15 @@
 #   sh scripts/bench.sh [sortbench options]      e.g. --pin 3
 #   BENCH_SIZES="1000 10000 100000 1000000" BENCH_API_MAX_N=1000000 sh scripts/bench.sh
 #                                                more sizes (an option: the timing is indicative, so the
-#                                                default is one set of 100,000 elements and few
+#                                                default is 10, 100 and 100,000 elements and few
 #                                                repetitions; the deterministic counts cover every size)
 #
 # Environment:
 #   BENCH_ID      file id (default: what the binary reports, e.g. linux-x86-64-gcc13)
 #   BENCH_HOST    a description of the machine for the stamp (default: none)
-#   BENCH_SIZES   element counts, space separated (default "100000")
+#   BENCH_SIZES   element counts, space separated (default "10 100 100000")
 #   BENCH_REPS    timed repetitions per cell (default 5)
-#   BENCH_API_MAX_N  largest size of the API benchmark (default: the quick run at 100000, 3 repetitions)
+#   BENCH_API_MAX_N  largest size of the API benchmark (default: the quick run at 10, 100 and 100000, 3 repetitions)
 #   BUILD_DIR     build directory (default build-linux; it is built first, so a
 #                 stale binary can never carry a fresh code fingerprint)
 #   BENCH_NO_SITE set to skip rebuilding the website afterwards
@@ -29,7 +29,7 @@ SB="$BUILD_DIR/sortbench"
 API="$BUILD_DIR/brainsort_api_bench"
 ID=${BENCH_ID:-$("$SB" --print-id)}
 SIZES=""
-for n in ${BENCH_SIZES:-100000}; do SIZES="$SIZES --n $n"; done
+for n in ${BENCH_SIZES:-10 100 100000}; do SIZES="$SIZES --n $n"; done
 mkdir -p results
 
 echo "== timing: results/$ID.csv"
