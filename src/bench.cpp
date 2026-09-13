@@ -299,7 +299,7 @@ struct TypeInfo {
     std::vector<std::string> algo_names;
 };
 
-TypeInfo type_info(const std::string& type) {
+TypeInfo describe_type(const std::string& type) {
     TypeInfo t;
     t.name = type;
     with_type(type, [&](auto tag) {
@@ -444,7 +444,7 @@ int main(int argc, char** argv) {
 
     std::map<std::string, std::vector<std::string>> algos_by_type;
     for (const auto& type : types) {
-        const TypeInfo ti = type_info(type);
+        const TypeInfo ti = describe_type(type);
         std::vector<std::string> selected;
         if (!algos.empty()) {
             for (const auto& a : algos)
@@ -528,7 +528,7 @@ int main(int argc, char** argv) {
 
     for (size_t n : sizes) {
         for (const auto& type : types) {
-            const TypeInfo ti = type_info(type);
+            const TypeInfo ti = describe_type(type);
             std::printf("\n#### n = %s, type: %s (%zu-byte elements) ####\n", fmt_int(n).c_str(), type.c_str(), ti.elem_bytes);
             md << "# n = " << fmt_int(n) << ", type: " << type << " (" << ti.elem_bytes << "-byte elements)\n\n";
             for (const auto& ds : datasets) {
