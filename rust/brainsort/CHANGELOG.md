@@ -4,7 +4,10 @@ The crate follows the version of the C++ library: one number, one
 algorithm. Notable changes per version; the format is
 [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 0.4.0
+
+Plain 32-bit keys sorted without an index, the comparator sort that infers
+its key, and the tests that reach beyond the contract of the sort.
 
 - The split kernels (the median split and the partition sort, AVX2) read
   the reference key of their varying-bits mask before the vector loop

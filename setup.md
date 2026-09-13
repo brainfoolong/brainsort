@@ -310,7 +310,7 @@ Both libraries carry one version: `BRAINSORT_VERSION` in
 
 1. Bump both versions, add the entry to `rust/brainsort/CHANGELOG.md`,
    regenerate the single header (`python3 scripts/amalgamate.py`), commit.
-2. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
+2. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`.
 3. [release.yml](.github/workflows/release.yml) checks that the tag and
    both versions agree, runs the C++ and Rust test suites and the golden
    equivalence, publishes the crate on crates.io and creates the GitHub
