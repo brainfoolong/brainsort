@@ -16,6 +16,9 @@ Inputs, all discovered in the results directory:
                    fingerprint, settings.
   <id>.api.md      the public-API benchmark of that machine
                    (brainsort_api_bench), stamped the same way.
+  <id>.rust.api.md the Rust port's public-API benchmark on the same machine
+                   (brainsort-bench --bench), stamped the same way with the
+                   fingerprint of the Rust sources.
 
 A timing file describes the code it was measured on. Its stamp carries a
 fingerprint of the measured sources (include/, src/, third_party/,
@@ -105,9 +108,9 @@ def num(s):
 
 
 # ---- the code fingerprint: must match sortbench/stamp.hpp -------------------
-def code_fingerprint(root):
+def code_fingerprint(root, measured_paths=None):
     files = []
-    for p in MEASURED_PATHS:
+    for p in measured_paths or MEASURED_PATHS:
         base = os.path.join(root, p)
         if os.path.isfile(base):
             files.append((p, base))
@@ -230,6 +233,54 @@ def load_timing(path, current_code, allow_stale):
 STAMP_RE = re.compile(r"<!--\s*stamp\s*(\{.*?\})\s*-->", re.S)
 
 
+RUST_MEASURED_PATHS = ["rust/brainsort/src", "rust/brainsort/Cargo.toml", "rust/brainsort-bench/src"]
+
+# C++ API benchmark type -> Rust API benchmark type: the cells the two
+# languages are compared on. Same generators (identical integer and string
+# inputs; doubles from the same distribution), same sizes, same machine id.
+LANG_PAIRS = {
+    "int32_t": "i32", "int64_t": "i64", "double": "f64", "std::string": "String",
+    "64-byte struct by int64": "64-byte struct by i64",
+    "int32_t by comparator": "i32 by comparator",
+    "64-byte struct by int64 by comparator": "64-byte struct by i64 by comparator",
+}
+
+
+def load_rust_api(path):
+    """The Rust port's table: the opponents come from the header row."""
+    pid = os.path.basename(path)[:-len(".rust.api.md")]
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    m = STAMP_RE.search(text)
+    stamp = {}
+    if m:
+        try:
+            stamp = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            stamp = {}
+    note, opponents, rows = "", [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("<!--") or line.startswith('"') or line.startswith("}") or line.startswith("-->"):
+            continue
+        if not line.startswith("|"):
+            if not note and not line.startswith("{"):
+                note = line
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if cells and cells[0] == "type":
+            opponents = cells[4:-1]
+            continue
+        if len(cells) < 6 or set(cells[0]) <= set("-:"):
+            continue
+        try:
+            others = [None if c == "n/a" else float(c) for c in cells[4:-1]]
+            rows.append([cells[0], int(cells[1]), cells[2], float(cells[3])] + others)
+        except ValueError:
+            continue
+    return pid, stamp, note, opponents, rows
+
+
 def load_api(path):
     pid = os.path.basename(path)[:-len(".api.md")]
     with open(path, encoding="utf-8") as f:
@@ -308,6 +359,8 @@ def main():
 
     api_platforms, api_rows = [], []
     for path in sorted(glob.glob(os.path.join(results, "*.api.md"))):
+        if path.endswith(".rust.api.md"):
+            continue
         pid, stamp, note, rows = load_api(path)
         code = stamp.get("code") or ""
         stale = "unknown" if not code or not current_code else ("stale" if code != current_code else "fresh")
@@ -324,6 +377,34 @@ def main():
         api_rows.extend([[pid] + r for r in rows])
         print(f"{path}: {len(rows)} rows, {stale}")
     api_platforms.sort(key=lambda p: (p["shared"], p["label"]))
+
+    # The Rust port: one file per machine, paired with the C++ file of the
+    # same machine id by the comparison section. Staleness is judged against
+    # the fingerprint of the Rust sources.
+    rust_code = code_fingerprint(ROOT, RUST_MEASURED_PATHS)
+    rust_platforms, rust_rows, rust_opponents = [], [], []
+    for path in sorted(glob.glob(os.path.join(results, "*.rust.api.md"))):
+        pid, stamp, note, opponents, rows = load_rust_api(path)
+        code = stamp.get("code") or ""
+        stale = "unknown" if not code or not rust_code else ("stale" if code != rust_code else "fresh")
+        if stale == "stale" and not allow_stale:
+            print(f"{path}: STALE (Rust sources changed), left out")
+            skipped.append(pid + " (rust)")
+            continue
+        if not rows:
+            print(f"{path}: no table, left out")
+            continue
+        if opponents and not rust_opponents:
+            rust_opponents = opponents
+        plat = next((p for p in platforms if p["id"] == pid), None)
+        rustc = re.sub(r"\s*\(.*", "", stamp.get("compiler") or "rustc")   # "rustc 1.98.0"
+        rust_platforms.append({"id": pid, "label": (plat["label"] if plat else short_label({**stamp, "compiler": ""}, pid)) + " · " + rustc,
+                               "note": note, "stale": stale, "reps": stamp.get("reps", ""), "compiler": stamp.get("compiler", ""),
+                               "cpu": stamp.get("cpu", plat["cpu"] if plat else ""),
+                               "shared": plat["shared"] if plat else is_shared_runner(stamp), "measured": stamp.get("measured", "")})
+        rust_rows.extend([[pid] + r[:4] + [r[4:]] for r in rows])
+        print(f"{path}: {len(rows)} rows, {stale}")
+    rust_platforms.sort(key=lambda p: (p["shared"], p["label"]))
 
     algo_names = [a for a in ALGO_ORDER if any(k[3] == a for k in det)] + sorted({k[3] for k in det} - set(ALGO_ORDER))
     algos = [{"name": a, "group": group_of(a), "stable": stable.get(a, False),
@@ -347,6 +428,10 @@ def main():
         "api": {"platforms": api_platforms, "types": [{"name": t, "desc": d} for t, d in API_TYPES.items() if any(r[1] == t for r in api_rows)],
                 "sizes": sorted({r[2] for r in api_rows}), "datasets": [d for d in STANDARD if any(r[3] == d for r in api_rows)],
                 "cols": ["p", "t", "n", "d", "bs", "ss", "st", "pd"], "rows": api_rows},
+        "rust": {"platforms": rust_platforms, "opponents": rust_opponents, "code": rust_code,
+                 "types": [{"name": r, "cpp": c} for c, r in LANG_PAIRS.items() if any(x[1] == r for x in rust_rows)],
+                 "sizes": sorted({r[2] for r in rust_rows}), "datasets": [d for d in STANDARD if any(r[3] == d for r in rust_rows)],
+                 "cols": ["p", "t", "n", "d", "bs", "others"], "rows": rust_rows},
     }
     js = json.dumps(data, separators=(",", ":")).replace("<", "\\u003c")
     html = TEMPLATE.replace("__DATA__", js).replace("__VERSION__", data["version"])
@@ -354,7 +439,8 @@ def main():
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write(html)
     print(f"wrote {out}: {len(det)} deterministic rows at n = {', '.join(str(n) for n in sorted({k[0] for k in det}))}; "
-          f"{len(platforms)} machine(s), {len(timing)} timed rows; API benchmark on {len(api_platforms)} machine(s), {len(api_rows)} rows"
+          f"{len(platforms)} machine(s), {len(timing)} timed rows; API benchmark on {len(api_platforms)} machine(s), {len(api_rows)} rows; "
+          f"Rust API benchmark on {len(rust_platforms)} machine(s), {len(rust_rows)} rows"
           + (f"; left out as stale: {', '.join(skipped)}" if skipped else ""))
 
 
@@ -590,13 +676,13 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
 <body>
 <main>
 <header>
-  <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><span class="badge">header-only C++20</span><a class="ci" id="ci-badge" href="#"><img alt="CI status" src=""></a></div>
+  <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><span class="badge">header-only C++20</span><span class="badge">Rust crate</span><a class="ci" id="ci-badge" href="#"><img alt="CI status" src=""></a></div>
   <p class="lead">A stable sorting algorithm for keys that map to an ordered integer: numbers, strings, dates, ids. Measured against the sorts that ship in today's standard libraries, on the same inputs, the same compiler flags and the same machines.</p>
   <div class="links" id="links"></div>
   <p class="stamp" id="stamp"></p>
   <nav class="toc">
     <a href="#use">Use it</a><a href="#glance">At a glance</a><a href="#reading">How to read this page</a><a href="#det">What each algorithm does</a>
-    <a href="#timing">Measured time per machine</a><a href="#api">The library on plain vectors</a><a href="#method">Method</a><a href="#tables">All numbers</a>
+    <a href="#timing">Measured time per machine</a><a href="#api">The library on plain vectors</a><a href="#rust">The Rust port</a><a href="#method">Method</a><a href="#tables">All numbers</a>
   </nav>
 </header>
 
@@ -617,7 +703,18 @@ brainsort::sort(rows, [](const Row&amp; a, const Row&amp; b) { return a.name &lt
 <div class="g"><b>Elements</b><p>Anything move-assignable, in any random-access range: <code>std::vector</code>, <code>std::deque</code>, <code>std::array</code>, <code>std::span</code>, C arrays, pointer pairs. The keys are sorted first, then the elements are permuted once. Every overload is stable.</p></div>
 <div class="g"><b>Three things to know</b><p>It uses memory: about 1.5 small records per element while sorting, plus one element per element for the final permutation of plain structs, and it keeps up to 32 MiB of freed blocks for the next call (<code>brainsort::release_memory()</code> frees them). An arbitrary comparator gets a comparison sort, the library's own stable merge sort, without the radix wins. A range of 2<sup>32</sup> elements or more goes to <code>std::stable_sort</code>.</p></div>
 </div>
-<p class="note">The full contract, every overload and how the elements are handled: <a id="link-readme" href="#">README, The library</a>.</p>
+<p class="note">The full contract, every overload and how the elements are handled: <a id="link-readme" href="#">README, The library</a>; step by step with examples: <a id="link-usage-cpp" href="#">the C++ usage guide</a>.</p>
+<h3>The same library in Rust</h3>
+<p class="intro">The crate <a id="link-crate" href="#">brainsort</a> is a port of the same algorithm, held to the C++ golden numbers by its test suite: every element read and write, every comparison and table access, the peak memory and the exact access sequence must match, cell for cell. No dependencies, <code>no_std</code> + <code>alloc</code>, AVX2 and BMI2 chosen at run time on x86-64.</p>
+<pre><code>[dependencies]
+brainsort = "__VERSION__"</code></pre>
+<pre><code>let mut v = vec![3, 1, 2];
+brainsort::sort(&amp;mut v);                                         // stable, by value
+brainsort::sort_by_key(&amp;mut rows, |r| r.id);                     // by a key
+brainsort::sort_by_key_ref(&amp;mut rows, |r| r.name.as_str());      // by a borrowed key
+brainsort::sort_by_key(&amp;mut rows, |r| (r.id, brainsort::Desc(r.score)));
+brainsort::sort_by(&amp;mut rows, |a, b| a.name.cmp(&amp;b.name));       // a comparator</code></pre>
+<p class="note">Keys: every integer, bool, char, f32, f64, Duration, str, String, byte strings, tuples and arrays of those, <code>Desc</code>; your own type implements <code>Key</code>. Elements: anything, permuted once. The API docs are on <a id="link-docsrs" href="#">docs.rs</a>; step by step with examples: <a id="link-usage-rust" href="#">the Rust usage guide</a>.</p>
 </section>
 
 <section id="glance">
@@ -712,6 +809,22 @@ brainsort::sort(rows, [](const Row&amp; a, const Row&amp; b) { return a.name &lt
 </div>
 </details>
 
+<details class="section" id="rust">
+<summary><span class="eyebrow">The same algorithm in Rust</span><h2>The Rust port on plain vectors <span class="tag">measured</span></h2><span class="muted" id="rust-sum"></span><span class="hint"></span></summary>
+<div class="body">
+<p class="intro" id="rust-intro"></p>
+<div class="row inline"><span class="lbl" style="min-width:0">machine</span><div class="chips" id="c-rust-platform"></div><span class="lbl" style="min-width:0;margin-left:8px">elements</span><div class="chips" id="c-rust-n"></div></div>
+<div class="machine" id="rust-machine"></div>
+<div class="tiles" id="rust-tiles"></div>
+<p class="note" id="rust-heat-note"></p><div class="scale"><span>brainsort behind</span><div class="bar"><i style="background:var(--loss-4)"></i><i style="background:var(--loss-3)"></i><i style="background:var(--loss-2)"></i><i style="background:var(--loss-1)"></i><i style="background:var(--neutral)"></i><i style="background:var(--win-1)"></i><i style="background:var(--win-2)"></i><i style="background:var(--win-3)"></i><i style="background:var(--win-4)"></i></div><span>brainsort ahead</span><span class="muted">grey: a tie within 5%. Each cell is the best other Rust sort divided by brainsort.</span></div>
+<div class="tablewrap"><table class="data heat" id="rust-heat"></table></div>
+<div id="rust-tables"></div>
+<h3>C++ and Rust on the same machine</h3>
+<p class="note" id="rust-pair-note"></p>
+<div class="tablewrap"><table class="data" id="rust-pair"></table></div>
+</div>
+</details>
+
 <section id="method">
 <span class="eyebrow">Behind the numbers</span>
 <h2>Method</h2>
@@ -762,13 +875,17 @@ const DATA = __DATA__;
 
 // ---- data access ---------------------------------------------------------------
 function table(t) { const idx = Object.fromEntries(t.cols.map((c, i) => [c, i])); return { idx, rows: t.rows, get: (r, c) => r[idx[c]] }; }
-const DET = table(DATA.det), TIM = table(DATA.timing), APIT = table(DATA.api);
+const DET = table(DATA.det), TIM = table(DATA.timing), APIT = table(DATA.api), RUSTT = table(DATA.rust);
 const detIdx = new Map(DET.rows.map(r => [`${r[0]}|${r[1]}|${r[2]}|${r[3]}`, r]));
 const detRow = (n, t, d, a) => detIdx.get(`${n}|${t}|${d}|${a}`);
 const timIdx = new Map(TIM.rows.map(r => [`${r[0]}|${r[1]}|${r[2]}|${r[3]}|${r[4]}`, r]));
 const timRow = (p, n, t, d, a) => timIdx.get(`${p}|${n}|${t}|${d}|${a}`);
 const apiIdx = new Map(APIT.rows.map(r => [`${r[0]}|${r[1]}|${r[2]}|${r[3]}`, r]));
 const apiRow = (p, t, n, d) => apiIdx.get(`${p}|${t}|${n}|${d}`);
+const rustIdx = new Map(RUSTT.rows.map(r => [`${r[0]}|${r[1]}|${r[2]}|${r[3]}`, r]));
+const rustRow = (p, t, n, d) => rustIdx.get(`${p}|${t}|${n}|${d}`);
+const RUSTPLAT = Object.fromEntries(DATA.rust.platforms.map(p => [p.id, p]));
+const rustDefaultN = () => DATA.rust.sizes.includes(100000) ? 100000 : (DATA.rust.sizes[DATA.rust.sizes.length - 1] || 0);
 const ALGO = Object.fromEntries(DATA.algos.map(a => [a.name, a]));
 const PLAT = Object.fromEntries(DATA.platforms.map(p => [p.id, p]));
 const APIPLAT = Object.fromEntries(DATA.api.platforms.map(p => [p.id, p]));
@@ -838,7 +955,8 @@ const DASH = { 'std::stable_sort': '', 'gfx::timsort': '6 3', 'timsort': '2 3', 
 const state = {
   n: REF_N, types: DATA.types.map(t => t.name), datasets: 'all', unstable: false, baselines: false,
   det: 'traffic', p: DATA.platforms.length ? DATA.platforms[0].id : '', meas: 'wall',
-  apiP: DATA.api.platforms.length ? DATA.api.platforms[0].id : '', apiN: DATA.api.sizes.includes(1000000) ? 1000000 : (DATA.api.sizes[DATA.api.sizes.length - 1] || 0),
+  apiP: DATA.api.platforms.length ? DATA.api.platforms[0].id : '', apiN: DATA.api.sizes.includes(100000) ? 100000 : (DATA.api.sizes[DATA.api.sizes.length - 1] || 0),
+  rustP: DATA.rust.platforms.length ? DATA.rust.platforms[0].id : '', rustN: DATA.rust.sizes.includes(100000) ? 100000 : (DATA.rust.sizes[DATA.rust.sizes.length - 1] || 0),
   detDs: 'random', detBarT: DATA.types[0] ? DATA.types[0].name : '', detBarD: 'random',
   measDs: 'random', measBarT: DATA.types[0] ? DATA.types[0].name : '', measBarD: 'random',
 };
@@ -854,6 +972,8 @@ function readHash() {
   const p = q.get('machine'); if (PLAT[p]) state.p = p;
   const ap = q.get('api_machine'); if (APIPLAT[ap]) state.apiP = ap;
   const an = parseInt(q.get('api_n') || '', 10); if (DATA.api.sizes.includes(an)) state.apiN = an;
+  const rp = q.get('rust_machine'); if (RUSTPLAT[rp]) state.rustP = rp;
+  const rn = parseInt(q.get('rust_n') || '', 10); if (DATA.rust.sizes.includes(rn)) state.rustN = rn;
   for (const id of (q.get('open') || '').split(',')) { const el = document.getElementById(id); if (el && el.tagName === 'DETAILS') el.open = true; }
 }
 function writeHash() {
@@ -867,8 +987,10 @@ function writeHash() {
   if (state.meas !== 'wall') q.set('meas', state.meas);
   if (DATA.platforms.length && state.p !== DATA.platforms[0].id) q.set('machine', state.p);
   if (DATA.api.platforms.length && state.apiP !== DATA.api.platforms[0].id) q.set('api_machine', state.apiP);
-  if (DATA.api.sizes.length && state.apiN !== (DATA.api.sizes.includes(1000000) ? 1000000 : DATA.api.sizes[DATA.api.sizes.length - 1])) q.set('api_n', state.apiN);
-  const open = ['timing', 'api'].filter(id => document.getElementById(id).open); if (open.length) q.set('open', open.join(','));
+  if (DATA.api.sizes.length && state.apiN !== (DATA.api.sizes.includes(100000) ? 100000 : DATA.api.sizes[DATA.api.sizes.length - 1])) q.set('api_n', state.apiN);
+  if (DATA.rust.platforms.length && state.rustP !== DATA.rust.platforms[0].id) q.set('rust_machine', state.rustP);
+  if (DATA.rust.sizes.length && state.rustN !== rustDefaultN()) q.set('rust_n', state.rustN);
+  const open = ['timing', 'api', 'rust'].filter(id => document.getElementById(id).open); if (open.length) q.set('open', open.join(','));
   const h = q.toString().replace(/%3A/g, ':').replace(/%2C/g, ',');
   history.replaceState(null, '', h ? '#' + h : location.pathname + location.search);
 }
@@ -1068,6 +1190,8 @@ function refresh() {
   chips(document.getElementById('c-meas-metric'), MEAS_METRICS.filter(m => p && TIM.rows.some(r => r[0] === p.id && TIM.get(r, m.key) != null)).map(m => ({ id: m.key, label: m.label, title: m.plain })), it => state.meas === it.id, it => { state.meas = it.id; });
   chips(document.getElementById('c-api-platform'), DATA.api.platforms.map(p => ({ id: p.id, label: p.label + (p.shared ? '' : ' ★'), title: p.cpu || '' })), it => state.apiP === it.id, it => { state.apiP = it.id; });
   chips(document.getElementById('c-api-n'), DATA.api.sizes.map(n => ({ id: n, label: fmtN(n) })), it => state.apiN === it.id, it => { state.apiN = it.id; });
+  chips(document.getElementById('c-rust-platform'), DATA.rust.platforms.map(p => ({ id: p.id, label: p.label + (p.shared ? '' : ' ★'), title: p.cpu || '' })), it => state.rustP === it.id, it => { state.rustP = it.id; });
+  chips(document.getElementById('c-rust-n'), DATA.rust.sizes.map(n => ({ id: n, label: fmtN(n) })), it => state.rustN === it.id, it => { state.rustN = it.id; });
   const dsItems = selDatasets().map(d => ({ id: d.name, label: d.name }));
   if (!dsItems.some(d => d.id === state.detDs)) state.detDs = dsItems[0] ? dsItems[0].id : '';
   if (!dsItems.some(d => d.id === state.measDs)) state.measDs = dsItems[0] ? dsItems[0].id : '';
@@ -1088,13 +1212,18 @@ function refresh() {
 function renderHeader() {
   document.getElementById('links').innerHTML =
     `<a href="${esc(DATA.repo)}">Source and README</a><a href="${esc(DATA.repo)}/blob/main/single_include/brainsort.hpp">Single header</a>` +
-    `<a href="${esc(DATA.repo)}/blob/main/setup.md">Build, test, reproduce</a><a href="${esc(DATA.repo)}/tree/main/results">Raw data (CSV)</a>`;
+    `<a href="${esc(DATA.repo)}/blob/main/setup.md">Build, test, reproduce</a><a href="${esc(DATA.repo)}/tree/main/results">Raw data (CSV)</a>` +
+    `<a href="https://crates.io/crates/brainsort">Rust crate</a><a href="https://docs.rs/brainsort">Rust API docs</a>`;
   const ci = document.getElementById('ci-badge');
   ci.href = `${DATA.repo}/actions/workflows/ci.yml`;
   ci.firstElementChild.src = `${DATA.repo}/actions/workflows/ci.yml/badge.svg`;
   document.getElementById('link-setup').href = `${DATA.repo}/blob/main/setup.md`;
   document.getElementById('link-header').href = `${DATA.repo}/blob/main/single_include/brainsort.hpp`;
   document.getElementById('link-readme').href = `${DATA.repo}#the-library`;
+  document.getElementById('link-usage-cpp').href = `${DATA.repo}/blob/main/docs/usage-cpp.md`;
+  document.getElementById('link-usage-rust').href = `${DATA.repo}/blob/main/docs/usage-rust.md`;
+  document.getElementById('link-crate').href = 'https://crates.io/crates/brainsort';
+  document.getElementById('link-docsrs').href = 'https://docs.rs/brainsort';
   document.getElementById('stamp').textContent = `Generated ${timeStamp(DATA.generated)} from code ${DATA.code || 'unknown'}. ` +
     `${DATA.algos.length} algorithms, ${DATA.types.length} key types, ${DATA.datasets.length} input patterns, ${DATA.sizes.length} sizes (${DATA.sizes.map(fmtN).join(', ')} elements), ${DATA.platforms.length} machine${DATA.platforms.length === 1 ? '' : 's'}.`;
   document.getElementById('footer').innerHTML = `brainsort ${esc(DATA.version)} · MIT license · <a href="${esc(DATA.repo)}">${esc(DATA.repo.replace(/^https?:\/\//, ''))}</a> · ` +
@@ -1244,6 +1373,66 @@ function renderApi() {
   document.getElementById('api-tables').innerHTML = t2;
 }
 
+// ---- the Rust section --------------------------------------------------------------------
+function renderRust() {
+  const R = DATA.rust;
+  document.getElementById('rust-sum').textContent = R.platforms.length ? `brainsort::sort on a Vec against the standard library's sorts and the radix crates; ${R.platforms.length} machine${R.platforms.length === 1 ? '' : 's'}` : 'no Rust benchmark files';
+  if (!R.platforms.length) { document.getElementById('rust-intro').textContent = 'No Rust benchmark file is present.'; return; }
+  const p = RUSTPLAT[state.rustP]; if (!p) return;
+  const n = state.rustN;
+  const opp = R.opponents;
+  document.getElementById('rust-intro').innerHTML = `The Rust crate on a plain <code>Vec&lt;T&gt;</code> against the Rust ecosystem as shipped: <code>slice::sort</code> (the standard library's stable sort, driftsort), <code>slice::sort_unstable</code> (ipnsort), and the radix crates <code>radsort</code> (stable), <code>voracious_radix_sort</code> (stable and unstable) and <code>rdst</code> (unstable, single-threaded here) where they support the key type. Wall time, every result checked, the same inputs and sizes as the C++ benchmark above. Note that ipnsort, rdst and voracious_sort are unstable sorts and radsort sorts only scalar keys; the standard stable sort is the like-for-like comparison on every type.`;
+  document.getElementById('rust-machine').innerHTML = `<b>${esc(p.label)}</b>${p.shared ? '' : ' ★'} · ${esc(p.cpu || '')} · ${esc(p.compiler || '')} · median of ${esc(String(p.reps || '?'))} runs · measured ${esc(timeStamp(p.measured))}${p.stale === 'stale' ? ' <span class="tag bad">stale</span>' : ''}`;
+  const cmp = r => { if (!r) return null; const b = RUSTT.get(r, 'bs'), os = RUSTT.get(r, 'others').map((v, i) => [opp[i], v]).filter(x => x[1] != null).sort((x, y) => x[1] - y[1]); if (!os.length) return null; const st = RUSTT.get(r, 'others')[0]; return { b, o: os[0][1], opp: os[0][0], win: b <= os[0][1], ratio: os[0][1] / b, st }; };
+  const cs = []; for (const t of R.types) for (const d of R.datasets) { const c = cmp(rustRow(p.id, t.name, n, d)); if (c) cs.push({ t: t.name, d, c }); }
+  const wins = cs.filter(x => x.c.win), winsSt = cs.filter(x => x.c.st != null && x.c.b <= x.c.st);
+  const best = wins.filter(x => x.c.ratio > 1.05).sort((a, b) => b.c.ratio - a.c.ratio)[0], worst = cs.filter(x => !x.c.win).sort((a, b) => a.c.ratio - b.c.ratio)[0];
+  document.getElementById('rust-tiles').innerHTML = cs.length ?
+    `<div class="tile ${wins.length * 2 >= cs.length ? 'win' : 'loss'}"><div class="k">Fastest or tied · n = ${fmtN(n)}</div><div class="v">${wins.length} <small>of ${cs.length}</small></div><div class="s">cells where brainsort beats or ties every other Rust sort measured; ${winsSt.length} of ${cs.length} against the standard library's stable sort alone</div></div>` +
+    `<div class="tile"><div class="k">Biggest win</div><div class="v">${best ? best.c.ratio.toFixed(1) + 'x faster' : 'none'}</div><div class="s">${best ? `than ${esc(best.c.opp)} on ${esc(best.t)} ${esc(best.d)} (${best.c.b.toFixed(3)} vs ${best.c.o.toFixed(3)} ms)` : 'brainsort is never ahead here'}</div></div>` +
+    `<div class="tile"><div class="k">Worst loss</div><div class="v">${worst ? (1 / worst.c.ratio).toFixed(2) + 'x slower' : 'none'}</div><div class="s">${worst ? `than ${esc(worst.c.opp)} on ${esc(worst.t)} ${esc(worst.d)} (${worst.c.b.toFixed(3)} vs ${worst.c.o.toFixed(3)} ms)` : 'fastest or tied in every cell'}</div></div>` :
+    '<div class="tile empty">nothing measured at this size on this machine</div>';
+  document.getElementById('rust-heat-note').textContent = `Wall time at n = ${fmtN(n)} on ${p.label}: the fastest other Rust sort divided by brainsort.`;
+  let h = '<thead><tr><th>input</th>' + R.types.map(t => `<th>${esc(t.name)}</th>`).join('') + '</tr></thead><tbody>';
+  for (const d of R.datasets) {
+    h += `<tr><td>${esc(d)}</td>` + R.types.map(t => { const c = cmp(rustRow(p.id, t.name, n, d)); return c ? `<td class="cell ${heatClass(c)}" data-tip="rust" data-t="${esc(t.name)}" data-d="${esc(d)}"><div>${c.ratio.toFixed(2)}x</div></td>` : '<td class="cell"><div class="muted">–</div></td>'; }).join('') + '</tr>';
+  }
+  document.getElementById('rust-heat').innerHTML = h + '</tbody>';
+  let t2 = '';
+  for (const t of R.types) {
+    let rows = '';
+    for (const d of R.datasets) {
+      const r = rustRow(p.id, t.name, n, d); if (!r) continue;
+      const vals = [RUSTT.get(r, 'bs'), ...RUSTT.get(r, 'others')], best = Math.min(...vals.filter(v => v != null));
+      rows += `<tr><td>${esc(d)}</td>` + vals.map(v => v == null ? '<td class="muted">n/a</td>' : `<td class="${v === best ? 'best' : ''}">${v.toFixed(3)}<span class="rel">${v === best ? 'best' : (v / best).toFixed(2) + 'x'}</span></td>`).join('') + '</tr>';
+    }
+    if (rows) t2 += `<h4>${esc(t.name)} · ms</h4><div class="tablewrap"><table class="data"><thead><tr><th>input</th><th><span class="sw" style="background:${gcolor('candidate')}"></span>brainsort</th>${opp.map(o => `<th><span class="sw" style="background:${gcolor('upstream')}"></span>${esc(o)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  document.getElementById('rust-tables').innerHTML = t2;
+  // C++ and Rust, same machine id, same size, same type and input.
+  const cp = APIPLAT[p.id];
+  let pr = '', cells = 0;
+  if (cp) {
+    for (const t of R.types) {
+      let rows = '';
+      for (const d of R.datasets) {
+        const rr = rustRow(p.id, t.name, n, d), cr = apiRow(p.id, t.cpp, n, d); if (!rr || !cr) continue;
+        const rb = RUSTT.get(rr, 'bs'), cb = APIT.get(cr, 'bs'), ratio = rb / cb;
+        const ro = RUSTT.get(rr, 'others').map((v, i) => [opp[i], v]).filter(x => x[1] != null).sort((x, y) => x[1] - y[1])[0];
+        const co = [['std::sort', APIT.get(cr, 'ss')], ['std::stable_sort', APIT.get(cr, 'st')], ['pdqsort', APIT.get(cr, 'pd')]].sort((x, y) => x[1] - y[1])[0];
+        const cls = Math.abs(Math.log2(ratio)) < 0.07 ? 'n0' : ratio < 1 ? (ratio < 0.5 ? 'w3' : ratio < 0.8 ? 'w2' : 'w1') : (ratio > 2 ? 'l3' : ratio > 1.25 ? 'l2' : 'l1');
+        rows += `<tr><td>${esc(d)}</td><td>${cb.toFixed(3)}</td><td>${rb.toFixed(3)}</td><td class="cell ${cls}"><div>${ratio.toFixed(2)}x</div></td><td>${co ? co[1].toFixed(3) + '<span class="rel">' + esc(co[0]) + '</span>' : 'n/a'}</td><td>${ro ? ro[1].toFixed(3) + '<span class="rel">' + esc(ro[0]) + '</span>' : 'n/a'}</td></tr>`;
+        cells++;
+      }
+      if (rows) pr += `<tbody><tr><th colspan="6" style="text-align:left">${esc(t.cpp)} · ${esc(t.name)}</th></tr>${rows}</tbody>`;
+    }
+  }
+  document.getElementById('rust-pair-note').textContent = cells ?
+    `${cells} cells at n = ${fmtN(n)} where both languages were measured on ${p.label}: the same generators (integer and string inputs identical, doubles from the same distribution), the same size, wall time in ms. The algorithm is the same step for step (the test suite proves it against the golden counts); what differs is the toolchain (${esc(cp.label)} against ${esc(p.compiler || 'rustc')}) and the API layer, so differences of a few tens of percent are the compilers, not the algorithm. Rust / C++ below 1 means the Rust build was faster.` :
+    (cp ? `Nothing measured in both languages at n = ${fmtN(n)} on this machine.` : `No C++ API benchmark of the machine ${p.label} is on this page, so there is nothing to pair the Rust numbers with.`);
+  document.getElementById('rust-pair').innerHTML = cells ? `<thead><tr><th>input</th><th>C++ brainsort</th><th>Rust brainsort</th><th>Rust / C++</th><th>best other C++</th><th>best other Rust</th></tr></thead>${pr}` : '';
+}
+
 // ---- method tables and glossary ------------------------------------------------------------
 function renderMethod() {
   document.getElementById('glossary').innerHTML =
@@ -1313,16 +1502,17 @@ document.addEventListener('mouseover', e => {
   if (k === 'det') { const m = detMetric(), get = detGet(state.n, g.dataset.t, g.dataset.d), c = compareCell(get); showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.n)} · ${esc(m.label.toLowerCase())}</b><table>${oppRows(get, m)}${c ? `<tr><td>brainsort ${c.win ? 'ahead' : 'behind'} of the best other sort by</td><td>${c.ratio === Infinity || c.ratio === 0 ? 'all' : (c.win ? c.ratio : 1 / c.ratio).toFixed(2) + 'x'}</td></tr>` : ''}</table>`); }
   else if (k === 'meas') { const m = measMetric(), get = timGet(state.p, state.n, g.dataset.t, g.dataset.d, m.key), c = compareCell(get); showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.n)} · ${esc(m.label.toLowerCase())} on ${esc(PLAT[state.p].label)}</b><table>${oppRows(get, m)}${c ? `<tr><td>brainsort ${c.win ? 'ahead' : 'behind'} by</td><td>${(c.win ? c.ratio : 1 / c.ratio).toFixed(2) + 'x'}</td></tr>` : ''}</table>`); }
   else if (k === 'api') { const r = apiRow(state.apiP, g.dataset.t, state.apiN, g.dataset.d); if (r) showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.apiN)}</b><table>${[['brainsort::sort', 'bs'], ['std::sort', 'ss'], ['std::stable_sort', 'st'], ['pdqsort', 'pd']].map(([l, c]) => `<tr><td>${l}</td><td>${APIT.get(r, c).toFixed(3)} ms</td></tr>`).join('')}</table>`); }
+  else if (k === 'rust') { const r = rustRow(state.rustP, g.dataset.t, state.rustN, g.dataset.d); if (r) showTip(`<b>${esc(g.dataset.t)} · ${esc(g.dataset.d)} · n = ${fmtN(state.rustN)}</b><table><tr><td>brainsort</td><td>${RUSTT.get(r, 'bs').toFixed(3)} ms</td></tr>${RUSTT.get(r, 'others').map((v, i) => v == null ? '' : `<tr><td>${esc(DATA.rust.opponents[i])}</td><td>${v.toFixed(3)} ms</td></tr>`).join('')}</table>`); }
   else if (k === 'pt') { const m = g.closest('#det-sizes') ? detMetric() : measMetric(); showTip(`<b>${esc(g.dataset.a)} · ${esc(g.dataset.t)} · n = ${fmtN(+g.dataset.n)}</b><table><tr><td>${esc(m.label)} per element</td><td>${esc(perElem(+g.dataset.v, m.per))}</td></tr><tr><td>total</td><td>${esc(m.fmt(+g.dataset.v * +g.dataset.n))}</td></tr></table>`); }
 });
 document.addEventListener('mousemove', e => { if (tip.hidden) return; const pad = 14; let x = e.clientX + pad, y = e.clientY + pad; if (x + tip.offsetWidth > innerWidth - 8) x = e.clientX - tip.offsetWidth - pad; if (y + tip.offsetHeight > innerHeight - 8) y = e.clientY - tip.offsetHeight - pad; tip.style.left = x + 'px'; tip.style.top = y + 'px'; });
 document.addEventListener('mouseout', e => { if (e.target.closest && e.target.closest('[data-tip]') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('[data-tip]'))) tip.hidden = true; });
 
 // ---- go ----------------------------------------------------------------------------------------
-function render() { writeHash(); renderGlance(); renderDet(); renderMeas(); renderApi(); renderAll(); }
+function render() { writeHash(); renderGlance(); renderDet(); renderMeas(); renderApi(); renderRust(); renderAll(); }
 document.getElementById('det-tables-wrap').addEventListener('toggle', renderDet);
 document.getElementById('meas-tables').parentElement.addEventListener('toggle', renderMeas);
-for (const id of ['timing', 'api']) document.getElementById(id).addEventListener('toggle', writeHash);
+for (const id of ['timing', 'api', 'rust']) document.getElementById(id).addEventListener('toggle', writeHash);
 readHash(); renderHeader(); renderMethod(); refresh(); render();
 window.addEventListener('hashchange', () => { readHash(); refresh(); render(); });
 
