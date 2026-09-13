@@ -55,11 +55,12 @@ brainsort::sort_by(&mut rows, |a, b| a.name.cmp(&b.name));
 ```
 
 A comparator gets a comparison sort: sorted, reversed and nearly sorted
-input is handled on the elements as the key sorts do, everything else is
-the standard library's `slice::sort_by`, on the elements themselves up to
-16 bytes and on an array of indices beyond that, so the passes move 4
-bytes per element and each element moves once, at the end. Prefer a key
-whenever the order is one; that is where the radix wins are.
+input is handled on the elements as the key sorts do; input made of long
+sorted pieces (ascending or descending) is merged as it is, and everything
+else is the standard library's `slice::sort_by`. Both run on the elements
+themselves up to 16 bytes and on an array of indices beyond that, so the
+passes move 4 bytes per element and each element moves once, at the end.
+Prefer a key whenever the order is one; that is where the radix wins are.
 
 When the comparator is the order of a field but the call site only has
 the comparator, `sort_by_inferred` finds the field, from 4,096 elements

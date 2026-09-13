@@ -16,7 +16,9 @@
 //! guess; the input is then still untouched and goes to the comparison
 //! sort.
 use crate::algorithm::{Scratch, brainsort_impl};
-use crate::api::{Buf, COMPARATOR_ROUTE_MAX, ELEMENT_ROUTE_MAX, INFER_MIN, PrescanResult, SMALL_SORT, Shape, ord3, prescan_cmp, reverse_stable, small_sort, sort_by_indices, sort_displaced_elements};
+use crate::api::{
+    Buf, COMPARATOR_ROUTE_MAX, ELEMENT_ROUTE_MAX, INFER_MIN, PrescanResult, SMALL_SORT, Shape, comparison_sort, ord3, prescan_cmp, reverse_stable, small_sort, sort_by_indices, sort_displaced_elements,
+};
 use crate::key::{f32_radix, f64_radix};
 use crate::record::{Rec32, Rec64, Record};
 use crate::view::{Alloc, AllocError, NoHooks, View};
@@ -335,7 +337,7 @@ pub fn sort_by_inferred_impl<T: PlainBytes, A: Alloc, F: FnMut(&T, &T) -> Orderi
     if indexed && size > ELEMENT_ROUTE_MAX && sort_by_indices::<T, A, F>(v, &mut cmp, nearly, false, true) {
         return;
     }
-    v.sort_by(cmp);
+    comparison_sort::<T, A, F>(v, &mut cmp);
 }
 
 #[cfg(test)]

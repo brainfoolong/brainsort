@@ -4,6 +4,19 @@ The crate follows the version of the C++ library: one number, one
 algorithm. Notable changes per version; the format is
 [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+- `sort_by` merges long natural runs before the standard library's stable
+  sort gets the slice: the run half of the C++ comparator sort, ported
+  (the boundaries of the maximal non-descending runs found in one pass
+  that gives up on unordered input within a few hundred elements, strictly
+  descending runs reversed in place, the runs merged bottom-up without a
+  branch on the comparison). Input made of sorted pieces, organ pipes and
+  sawtooth waves sort 1.5x to 2x faster from ten thousand elements on;
+  unordered input is unchanged. The stable quicksort of the C++ was ported
+  and measured too, and not kept: driftsort was faster on every unordered
+  input (decision 0018).
+
 ## 0.4.0
 
 Plain 32-bit keys sorted without an index, the comparator sort that infers

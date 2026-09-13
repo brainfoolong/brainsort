@@ -50,9 +50,10 @@ be anything: they are permuted once, after the keys were sorted.
 - **Floating point.** `-0.0 == +0.0`; a NaN with the sign bit clear sorts
   after `+inf`, with it set before `-inf`. A total order, so no input is
   unsafe; it is not `f64::total_cmp`, which orders `-0.0` before `+0.0`.
-- **A comparator** gets the standard library's stable sort, with sorted,
-  reversed and nearly sorted input handled on the elements first; elements
-  over 16 bytes are sorted through indices and moved once.
+- **A comparator** gets a comparison sort, with sorted, reversed and
+  nearly sorted input handled on the elements first: long natural runs
+  are merged as they are, anything else is the standard library's stable
+  sort; elements over 16 bytes are sorted through indices and moved once.
   `sort_by_inferred` first guesses the window of the element the
   comparator compares, from a sample of its answers, sorts by it as a key
   and verifies; the elements must be `PlainBytes` (no padding).

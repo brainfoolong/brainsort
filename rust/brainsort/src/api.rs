@@ -954,9 +954,10 @@ pub(crate) fn ord3(o: Ordering) -> i32 {
 }
 
 /// Sorts `v` by a comparator: sorted, reversed and nearly sorted input is
-/// handled on the elements; everything else is a comparison sort, the
-/// standard library's stable sort, on the elements themselves up to 16
-/// bytes and through an index array beyond that.
+/// handled on the elements; everything else is a comparison sort (long
+/// natural runs merged, the standard library's stable sort otherwise), on
+/// the elements themselves up to 16 bytes and through an index array
+/// beyond that.
 pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut cmp: F) {
     let n = v.len();
     if n < 2 {
@@ -987,13 +988,22 @@ pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut 
             return;
         }
     }
-    v.sort_by(cmp);
+    comparison_sort::<T, A, F>(v, &mut cmp);
+}
+
+/// The comparison sort of a slice by a comparator: long natural runs are
+/// merged as they are (compsort.rs); anything else is the standard
+/// library's stable sort.
+pub fn comparison_sort<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: &mut F) {
+    if !crate::compsort::merge_natural_runs::<T, A, _>(v, &mut |a, b| cmp(a, b) == Ordering::Less) {
+        v.sort_by(|a, b| cmp(a, b));
+    }
 }
 
 /// The comparator sort of elements over 16 bytes: an array of the indices
 /// 0..n is sorted by the order of the elements it points to (the
-/// displaced-element route first when asked, the standard library's stable
-/// sort otherwise) and the elements are permuted once. The passes move 4
+/// displaced-element route first when asked, the comparison sort
+/// otherwise) and the elements are permuted once. The passes move 4
 /// bytes per element instead of the element, and a comparator that panics
 /// leaves the slice untouched, because nothing moves before the last
 /// comparison. False, with the slice untouched, if the index array cannot
@@ -1020,7 +1030,7 @@ pub(crate) fn sort_by_indices<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut
         if !fallback {
             return false;
         }
-        indices.sort_by(order);
+        comparison_sort::<u32, A, _>(indices, &mut order);
     }
     permute::<T, *mut u32, A>(v, ix, n, sparse);
     true

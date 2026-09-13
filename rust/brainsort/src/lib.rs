@@ -120,6 +120,7 @@ extern crate std;
 
 mod algorithm;
 mod api;
+mod compsort;
 mod cpu;
 mod infer;
 pub mod key;
@@ -174,10 +175,11 @@ pub fn sort_by_key_ref<T, K: Key + ?Sized, F: for<'a> FnMut(&'a T) -> &'a K>(v: 
 }
 
 /// Sorts the slice by a comparator. Stable. Sorted, reversed and nearly
-/// sorted input is handled on the elements as the key sorts do; everything
-/// else is a comparison sort, the standard library's `slice::sort_by`, on
-/// the elements themselves up to 16 bytes and on an array of indices
-/// beyond that, so that larger elements move once, at the end.
+/// sorted input is handled on the elements as the key sorts do; input made
+/// of long sorted pieces is merged as it is, and everything else is the
+/// standard library's `slice::sort_by`. Both run on the elements themselves
+/// up to 16 bytes and on an array of indices beyond that, so that larger
+/// elements move once, at the end.
 ///
 /// ```
 /// let mut v = vec![3, 1, 2];
@@ -228,7 +230,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[doc(hidden)]
 pub mod internals {
     pub use crate::algorithm::{Scratch, brainsort_impl};
-    pub use crate::api::{ByRef, ByVal, Identity, Proj, sort_by_impl, sort_by_key_impl};
+    pub use crate::api::{ByRef, ByVal, Identity, Proj, comparison_sort, sort_by_impl, sort_by_key_impl};
     pub use crate::cpu::{cache_sizes, have_avx2, have_bmi2};
     pub use crate::infer::sort_by_inferred_impl;
     pub use crate::memory::DefaultAlloc;
