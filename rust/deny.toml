@@ -1,0 +1,21 @@
+# cargo-deny: the published crate has no dependencies at all; this policy
+# covers the benchmark harness's opponents and the fuzz target.
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "Unicode-3.0", "Unicode-DFS-2016", "MPL-2.0", "ISC", "CC0-1.0", "0BSD"]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

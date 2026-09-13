@@ -7,3 +7,9 @@ sortbench_tmp_out.txt
 *.o
 *.obj
 *.exe
+# Rust port
+rust/target/
+rust/**/fuzz/corpus/
+rust/**/fuzz/artifacts/
+rust/**/fuzz/coverage/
+rust/**/fuzz/target/

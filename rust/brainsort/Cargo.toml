@@ -1,0 +1,35 @@
+[package]
+name = "brainsort"
+version = "0.3.0"
+edition.workspace = true
+rust-version = "1.86"
+license.workspace = true
+repository.workspace = true
+description = "Stable sort for keys that map to an ordered integer: numbers, strings, dates, ids. Radix where the key allows it, less work on structured input, AVX2/BMI2 chosen at run time."
+documentation = "https://docs.rs/brainsort"
+homepage = "https://brainfoolong.github.io/brainsort/"
+readme = "README.md"
+keywords = ["sort", "sorting", "radix", "stable", "simd"]
+categories = ["algorithms", "no-std"]
+authors = ["BrainFooLong"]
+include = ["src/**", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE", "build.rs"]
+
+[package.metadata.docs.rs]
+all-features = false
+features = ["std"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["std"]
+# Run-time CPU feature detection, the memory cache, OsStr/Path keys.
+std = []
+# The generic entry points, the hooks and the allocator trait, for the
+# benchmark harness. Not part of the public API: no semver guarantee.
+__internals = []
+
+[dependencies]
+
+[dev-dependencies]
+
+[lib]
+bench = false

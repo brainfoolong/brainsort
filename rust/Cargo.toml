@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["brainsort", "brainsort-bench"]
+exclude = ["brainsort/fuzz"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/brainfoolong/brainsort"
+
+[profile.release]
+debug = 1
+
+[profile.bench]
+debug = 1
