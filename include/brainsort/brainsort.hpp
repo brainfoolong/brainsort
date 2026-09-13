@@ -197,9 +197,16 @@ enum class Shape : int { unordered, sorted, reversed, nearly_sorted };
 struct Prescan {
     Shape  shape    = Shape::unordered;
     size_t descents = 0;
-    size_t ascents  = 0;
+    size_t ascents  = 0;   // as seen by the pass: none are counted before the first descent
 };
 constexpr size_t kPrescanBlock = 256;
+inline void classify(Prescan& r, size_t n, size_t desc, size_t asc) {
+    r.descents = desc;
+    r.ascents  = asc;
+    if (desc == 0) r.shape = Shape::sorted;
+    else if (asc == 0) r.shape = Shape::reversed;
+    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+}
 
 // A plain array of 32- or 64-bit numbers: eight or four elements per vector
 // compared against their predecessors, the compare bits counted; NaN is
@@ -259,6 +266,26 @@ BRAINSORT_TARGET_AVX2 inline Prescan prescan_avx2(const K* p, size_t n) {
 }
 #endif
 
+// Whether the pairs before `upto` hold an ascent.
+template <class It, class Proj>
+inline bool prefix_ascent(It first, size_t upto, Proj& proj) {
+    using K = key_of_t<It, Proj>;
+    bool nan = false;
+    KeyHolder<It, Proj> prev(std::invoke(proj, first[0]));
+    for (size_t i = 1; i < upto; ++i) {
+        KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]));
+        if (scan_compare<K>(prev.get(), cur.get(), nan) < 0) return true;
+        prev = std::move(cur);
+    }
+    return false;
+}
+
+// One pass over the keys in three phases: the longest non-descending prefix
+// costs one compare and one branch per pair, so does the non-ascending run
+// after the first descent, and only from the first ascent after that are
+// the pairs counted. The prefix's ascents are looked up only when the
+// bail-out or the classification asks for them, so every decision is the
+// one a plain count would make.
 template <class It, class Proj>
 inline Prescan prescan(It first, size_t n, Proj& proj) {
     using K = key_of_t<It, Proj>;
@@ -268,26 +295,50 @@ inline Prescan prescan(It first, size_t n, Proj& proj) {
     }
 #endif
     Prescan r;
-    size_t desc = 0, asc = 0;
-    bool   nan = false;
+    bool    nan = false;
     KeyHolder<It, Proj> prev(std::invoke(proj, first[0]));
-    for (size_t i = 1; i < n; ++i) {
+    size_t i = 1;
+    for (; i < n; ++i) {
         KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]));
         const int c = scan_compare<K>(prev.get(), cur.get(), nan);
-        desc += c > 0;
-        asc  += c < 0;
         prev = std::move(cur);
+        if (c > 0) break;
+    }
+    if (i == n) {
+        if (nan) return r;   // NaN: the records know its place, the value compare does not
+        r.shape = Shape::sorted;
+        return r;
+    }
+    size_t desc = 1, j = i + 1;
+    int    prefix = -1;   // whether the prefix has an ascent, once asked
+    const auto prefix_asc = [&]() { if (prefix < 0) prefix = prefix_ascent(first, i, proj) ? 1 : 0; return prefix > 0; };
+    for (; j < n; ++j) {
+        KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(j)]));
+        const int c = scan_compare<K>(prev.get(), cur.get(), nan);
+        prev = std::move(cur);
+        if (c < 0) break;
+        desc += c > 0;
         // Unordered for certain: the displaced-element route gives up once
         // the displaced elements exceed scanned/8 + 64, and every descent
         // displaces at least one element.
-        if ((i & (kPrescanBlock - 1)) == 0 && asc > 0 && desc > (i >> 3) + 64) return r;
+        if ((j & (kPrescanBlock - 1)) == 0 && desc > (j >> 3) + 64 && prefix_asc()) return r;
     }
-    if (nan) return r;   // NaN: the records know its place, the value compare does not
-    r.descents = desc;
-    r.ascents  = asc;
-    if (desc == 0) r.shape = Shape::sorted;
-    else if (asc == 0) r.shape = Shape::reversed;
-    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+    if (j == n) {
+        if (nan) return r;
+        classify(r, n, desc, prefix_asc() ? 1 : 0);
+        return r;
+    }
+    size_t asc = 1;
+    for (++j; j < n; ++j) {
+        KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(j)]));
+        const int c = scan_compare<K>(prev.get(), cur.get(), nan);
+        prev = std::move(cur);
+        desc += c > 0;
+        asc  += c < 0;
+        if ((j & (kPrescanBlock - 1)) == 0 && desc > (j >> 3) + 64) return r;
+    }
+    if (nan) return r;
+    classify(r, n, desc, asc);
     return r;
 }
 
@@ -376,26 +427,69 @@ inline bool sort_displaced_elements(It first, size_t n, Order order) {
     }
 }
 
-// The prescan of the comparator overloads: two comparisons per pair.
+// Whether the pairs before `upto` hold an ascent, by the comparator.
+template <class It, class Comp>
+inline bool prefix_ascent_comp(It first, size_t upto, Comp& comp) {
+    for (size_t i = 1; i < upto; ++i)
+        if (comp(first[static_cast<std::ptrdiff_t>(i - 1)], first[static_cast<std::ptrdiff_t>(i)])) return true;
+    return false;
+}
+
+// The prescan of the comparator overloads: the non-descending prefix and
+// the strictly descending run after the first descent cost one call of the
+// `less` comparator and one branch per pair; ties and the pairs after the
+// first ascent are counted. The bail-out a plain count would have taken
+// inside the run is replayed after it, so every decision is the count's.
 template <class It, class Comp>
 inline Prescan prescan_comp(It first, size_t n, Comp& comp) {
     Prescan r;
-    size_t desc = 0, asc = 0;
-    for (size_t i = 1; i < n; ++i) {
-        const auto& prev = first[static_cast<std::ptrdiff_t>(i - 1)];
-        const auto& cur  = first[static_cast<std::ptrdiff_t>(i)];
-        const bool d = comp(cur, prev);
+    size_t i = 1;
+    for (; i < n; ++i)
+        if (comp(first[static_cast<std::ptrdiff_t>(i)], first[static_cast<std::ptrdiff_t>(i - 1)])) break;
+    if (i == n) {
+        r.shape = Shape::sorted;
+        return r;
+    }
+    int prefix = -1;   // whether the prefix has an ascent, once asked
+    const auto prefix_asc = [&]() { if (prefix < 0) prefix = prefix_ascent_comp(first, i, comp) ? 1 : 0; return prefix > 0; };
+    size_t j = i + 1;
+    for (; j < n; ++j)
+        if (!comp(first[static_cast<std::ptrdiff_t>(j)], first[static_cast<std::ptrdiff_t>(j - 1)])) break;
+    for (size_t b = (i + kPrescanBlock) & ~(kPrescanBlock - 1); b < j; b += kPrescanBlock) {
+        if (b - i + 1 > (b >> 3) + 64) {
+            if (prefix_asc()) return r;
+            break;
+        }
+    }
+    size_t desc = j - i;
+    if (j == n) {
+        classify(r, n, desc, prefix_asc() ? 1 : 0);
+        return r;
+    }
+    for (; j < n; ++j) {
+        const auto& prev = first[static_cast<std::ptrdiff_t>(j - 1)];
+        const auto& cur  = first[static_cast<std::ptrdiff_t>(j)];
+        if (comp(cur, prev)) ++desc;
+        else if (comp(prev, cur)) break;
+        if ((j & (kPrescanBlock - 1)) == 0 && desc > (j >> 3) + 64 && prefix_asc()) return r;
+    }
+    if (j == n) {
+        classify(r, n, desc, prefix_asc() ? 1 : 0);
+        return r;
+    }
+    size_t asc = 1;
+    for (++j; j < n; ++j) {
+        const auto& prev = first[static_cast<std::ptrdiff_t>(j - 1)];
+        const auto& cur  = first[static_cast<std::ptrdiff_t>(j)];
+        const bool  d    = comp(cur, prev);
         desc += d;
         asc  += !d && comp(prev, cur);
-        if ((i & (kPrescanBlock - 1)) == 0 && asc > 0 && desc > (i >> 3) + 64) return r;
+        if ((j & (kPrescanBlock - 1)) == 0 && desc > (j >> 3) + 64) return r;
     }
-    r.descents = desc;
-    r.ascents  = asc;
-    if (desc == 0) r.shape = Shape::sorted;
-    else if (asc == 0) r.shape = Shape::reversed;
-    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+    classify(r, n, desc, asc);
     return r;
 }
+
 template <class It, class Comp>
 inline void reverse_stable_comp(It first, size_t n, Comp& comp, const Prescan& s) {
     std::reverse(first, first + static_cast<std::ptrdiff_t>(n));

@@ -20,6 +20,9 @@ pub const SMALL_SORT: usize = 32;
 /// larger ones through the records, where moving only the out-of-place
 /// elements is cheaper than rewriting every element once.
 pub const ELEMENT_ROUTE_MAX: usize = 16;
+/// The comparator sort, which has no records to fall back on, sorts
+/// nearly sorted elements up to this size in place (the C++ has no limit).
+pub const COMPARATOR_ROUTE_MAX: usize = 64;
 const PRESCAN_BLOCK: usize = 256;
 
 // ---- projections --------------------------------------------------------------------------
@@ -288,7 +291,7 @@ pub struct PrescanResult {
     pub shape: Shape,
     /// Descents.
     pub descents: usize,
-    /// Ascents.
+    /// Ascents seen by the pass: none are counted before the first descent.
     pub ascents: usize,
 }
 impl Default for PrescanResult {
@@ -311,9 +314,26 @@ fn classify(r: &mut PrescanResult, n: usize, desc: usize, asc: usize) {
     };
 }
 
-/// The pass counts descents and ascents and stops as soon as the counts
-/// prove the input unordered (a few hundred elements into random input),
-/// so an expensive key function is called few times on such input.
+/// Whether the pairs before `upto` hold an ascent.
+fn prefix_ascent<T, P: Proj<T>>(v: &[T], upto: usize, proj: &mut P) -> bool {
+    let mut prev = proj.hold(&v[0]);
+    for i in 1..upto {
+        let cur = proj.hold(&v[i]);
+        if prev.cmp_key(&cur) == Ordering::Less {
+            return true;
+        }
+        prev = cur;
+    }
+    false
+}
+/// One pass over the keys in three phases: the longest non-descending
+/// prefix costs one compare and one branch per pair, so does the
+/// non-ascending run after the first descent, and only from the first
+/// ascent after that are the pairs counted. The prefix's ascents are looked
+/// up only when the bail-out or the classification asks for them, so every
+/// decision is the one a plain count would make. The pass stops as soon as
+/// the counts prove the input unordered (a few hundred elements into random
+/// input), so an expensive key function is called few times on such input.
 fn prescan<T, P: Proj<T>>(v: &[T], proj: &mut P) -> PrescanResult {
     let n = v.len();
     #[cfg(all(target_arch = "x86_64", not(brainsort_no_simd)))]
@@ -337,36 +357,123 @@ fn prescan<T, P: Proj<T>>(v: &[T], proj: &mut P) -> PrescanResult {
         }
     }
     let mut r = PrescanResult::default();
-    let (mut desc, mut asc) = (0usize, 0usize);
     let mut prev = proj.hold(&v[0]);
-    for i in 1..n {
+    let mut i = 1;
+    while i < n {
         let cur = proj.hold(&v[i]);
         let c = prev.cmp_key(&cur);
-        desc += (c == Ordering::Greater) as usize;
-        asc += (c == Ordering::Less) as usize;
         prev = cur;
+        if c == Ordering::Greater {
+            break;
+        }
+        i += 1;
+    }
+    if i == n {
+        r.shape = Shape::Sorted;
+        return r;
+    }
+    let (mut desc, mut j) = (1usize, i + 1);
+    let mut prefix: Option<bool> = None; // whether the prefix has an ascent, once asked
+    while j < n {
+        let cur = proj.hold(&v[j]);
+        let c = prev.cmp_key(&cur);
+        prev = cur;
+        if c == Ordering::Less {
+            break;
+        }
+        desc += (c == Ordering::Greater) as usize;
         // Unordered for certain: the displaced-element route gives up once
         // the displaced elements exceed scanned/8 + 64, and every descent
         // displaces at least one element.
-        if i & (PRESCAN_BLOCK - 1) == 0 && asc > 0 && desc > (i >> 3) + 64 {
+        if j & (PRESCAN_BLOCK - 1) == 0 && desc > (j >> 3) + 64 && *prefix.get_or_insert_with(|| prefix_ascent(v, i, proj)) {
             return r;
         }
+        j += 1;
+    }
+    if j == n {
+        let asc = prefix.unwrap_or_else(|| prefix_ascent(v, i, proj)) as usize;
+        classify(&mut r, n, desc, asc);
+        return r;
+    }
+    let mut asc = 1usize;
+    j += 1;
+    while j < n {
+        let cur = proj.hold(&v[j]);
+        let c = prev.cmp_key(&cur);
+        prev = cur;
+        desc += (c == Ordering::Greater) as usize;
+        asc += (c == Ordering::Less) as usize;
+        if j & (PRESCAN_BLOCK - 1) == 0 && desc > (j >> 3) + 64 {
+            return r;
+        }
+        j += 1;
     }
     classify(&mut r, n, desc, asc);
     r
 }
-/// The prescan of the comparator sort: two comparisons per pair.
+/// Whether the pairs before `upto` hold an ascent, by the comparator.
+fn prefix_ascent_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], upto: usize, cmp: &mut F) -> bool {
+    (1..upto).any(|i| cmp(&v[i - 1], &v[i]) == Ordering::Less)
+}
+/// The prescan of the comparator sort: the non-descending prefix and the
+/// strictly descending run after the first descent cost one call and one
+/// branch per pair; ties and the pairs after the first ascent are counted.
+/// The bail-out a plain count would have taken inside the run is replayed
+/// after it, so every decision is the count's.
 fn prescan_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> PrescanResult {
     let n = v.len();
     let mut r = PrescanResult::default();
-    let (mut desc, mut asc) = (0usize, 0usize);
-    for i in 1..n {
-        let c = cmp(&v[i - 1], &v[i]);
-        desc += (c == Ordering::Greater) as usize;
-        asc += (c == Ordering::Less) as usize;
-        if i & (PRESCAN_BLOCK - 1) == 0 && asc > 0 && desc > (i >> 3) + 64 {
+    let i = 1 + v.iter().zip(&v[1..]).take_while(|(p, c)| cmp(p, c) != Ordering::Greater).count();
+    if i == n {
+        r.shape = Shape::Sorted;
+        return r;
+    }
+    let mut prefix: Option<bool> = None; // whether the prefix has an ascent, once asked
+    // Asked the other way round, so that a comparator built from two `less`
+    // calls answers a descent with one.
+    let mut j = i + 1 + v[i..].iter().zip(&v[i + 1..]).take_while(|(p, c)| cmp(c, p) == Ordering::Less).count();
+    let mut b = (i + PRESCAN_BLOCK) & !(PRESCAN_BLOCK - 1);
+    while b < j {
+        if b - i + 1 > (b >> 3) + 64 {
+            if *prefix.get_or_insert_with(|| prefix_ascent_cmp(v, i, cmp)) {
+                return r;
+            }
+            break;
+        }
+        b += PRESCAN_BLOCK;
+    }
+    let mut desc = j - i;
+    if j == n {
+        let asc = prefix.unwrap_or_else(|| prefix_ascent_cmp(v, i, cmp)) as usize;
+        classify(&mut r, n, desc, asc);
+        return r;
+    }
+    while j < n {
+        let c = cmp(&v[j], &v[j - 1]);
+        if c == Ordering::Greater {
+            break;
+        }
+        desc += (c == Ordering::Less) as usize;
+        if j & (PRESCAN_BLOCK - 1) == 0 && desc > (j >> 3) + 64 && *prefix.get_or_insert_with(|| prefix_ascent_cmp(v, i, cmp)) {
             return r;
         }
+        j += 1;
+    }
+    if j == n {
+        let asc = prefix.unwrap_or_else(|| prefix_ascent_cmp(v, i, cmp)) as usize;
+        classify(&mut r, n, desc, asc);
+        return r;
+    }
+    let mut asc = 1usize;
+    j += 1;
+    while j < n {
+        let c = cmp(&v[j - 1], &v[j]);
+        desc += (c == Ordering::Greater) as usize;
+        asc += (c == Ordering::Less) as usize;
+        if j & (PRESCAN_BLOCK - 1) == 0 && desc > (j >> 3) + 64 {
+            return r;
+        }
+        j += 1;
     }
     classify(&mut r, n, desc, asc);
     r
@@ -620,9 +727,10 @@ impl<T, E: Elem, O: FnMut(&T, &T) -> i32, A: Alloc> Arr for ElemView<T, E, O, A>
     }
 }
 
-/// Runs the displaced-element route on the elements. Ok(true) when the
-/// slice is sorted; Ok(false), with the slice untouched, when the route
-/// gave up. A panic in `order` leaves every element in the slice.
+/// Runs the displaced-element route on elements of up to
+/// `COMPARATOR_ROUTE_MAX` bytes. Ok(true) when the slice is sorted;
+/// Ok(false), with the slice untouched, when the route gave up. A panic in
+/// `order` leaves every element in the slice.
 fn sort_displaced_elements<T, A: Alloc, O: FnMut(&T, &T) -> i32>(v: &mut [T], mut order: O) -> bool {
     macro_rules! run {
         ($u:ty, $w:expr) => {{
@@ -631,16 +739,34 @@ fn sort_displaced_elements<T, A: Alloc, O: FnMut(&T, &T) -> i32>(v: &mut [T], mu
         }};
     }
     let (size, align) = (core::mem::size_of::<T>(), core::mem::align_of::<T>());
-    if size == 0 || size > ELEMENT_ROUTE_MAX || align > 8 {
+    if size == 0 || size > COMPARATOR_ROUTE_MAX || align > 8 {
         return false;
     }
     match (align, size) {
         (8, 8) => run!(u64, 1),
         (8, 16) => run!(u64, 2),
+        (8, 24) => run!(u64, 3),
+        (8, 32) => run!(u64, 4),
+        (8, 40) => run!(u64, 5),
+        (8, 48) => run!(u64, 6),
+        (8, 56) => run!(u64, 7),
+        (8, 64) => run!(u64, 8),
         (4, 4) => run!(u32, 1),
         (4, 8) => run!(u32, 2),
         (4, 12) => run!(u32, 3),
         (4, 16) => run!(u32, 4),
+        (4, 20) => run!(u32, 5),
+        (4, 24) => run!(u32, 6),
+        (4, 28) => run!(u32, 7),
+        (4, 32) => run!(u32, 8),
+        (4, 36) => run!(u32, 9),
+        (4, 40) => run!(u32, 10),
+        (4, 44) => run!(u32, 11),
+        (4, 48) => run!(u32, 12),
+        (4, 52) => run!(u32, 13),
+        (4, 56) => run!(u32, 14),
+        (4, 60) => run!(u32, 15),
+        (4, 64) => run!(u32, 16),
         (2, 2) => run!(u16, 1),
         (2, 4) => run!(u16, 2),
         (2, 6) => run!(u16, 3),
@@ -737,7 +863,7 @@ pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut 
         reverse_stable(v, &s, |a, b| cmp(a, b) == Ordering::Equal);
         return;
     }
-    if s.shape == Shape::NearlySorted && core::mem::size_of::<T>() <= ELEMENT_ROUTE_MAX && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
+    if s.shape == Shape::NearlySorted && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
         return;
     }
     v.sort_by(cmp);

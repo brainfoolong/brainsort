@@ -105,8 +105,8 @@ directly.
 - **Memory.** About 1.5 small records per element while sorting (8 bytes
   for keys up to 32 bits, 16 bytes up to 64 bits or a string, more for
   composites), plus one element per element for the permutation. Sorted
-  and reversed input, and nearly sorted elements of up to 16 bytes, need
-  no memory beyond the displaced elements.
+  and reversed input, and nearly sorted elements of up to 16 bytes (64
+  with a comparator), need no memory beyond the displaced elements.
 - **Memory is kept.** Freed blocks of 64 KiB and more are kept, up to
   32 MiB, for the next sort of the process. `set_memory_cache_limit(bytes)`
   changes the limit (0 disables the cache); `release_memory()` frees the

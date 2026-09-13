@@ -6,6 +6,14 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- `sort_by` takes the displaced-element route for nearly sorted elements
+  of up to 64 bytes, as the C++ comparator overload does; it had stopped
+  at 16, the key path's limit, and sent such input to the full sort.
+- The prescans walk the non-descending prefix and the non-ascending run
+  after the first descent with one compare and one branch per pair, and
+  count only after that; sorted and reversed input costs the same as the
+  standard library's run detection. Every decision is unchanged.
+
 - The AVX2 prescan of plain slices takes the key kind as a compile-time
   constant, as the C++ template does; the run-time match inside its loop
   had cost about 1.7 times the C++ pass, which is what the sorted and
