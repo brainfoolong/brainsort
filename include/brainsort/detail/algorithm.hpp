@@ -830,13 +830,18 @@ inline typename A::value_type pick_pivot(A a, size_t n, int chunk, Pivot& info) 
     info.all_equal   = m == 0;
     info.smin        = lo;
     info.smax        = hi;
-    // The two key extractions are read in one fixed order (the operands of <
-    // are unsequenced), so the key bytes a counted run tallies are the same
-    // on every compiler.
-    auto by_key = [chunk](T x, T y) { const uint64_t kx = A::key(x, chunk), ky = A::key(y, chunk); return kx < ky; };
-    std::nth_element(smp, smp + k / 2, smp + k, by_key);
-    const T        pivot = smp[k / 2];
-    const uint64_t pk    = A::key(pivot, chunk);
+    // The median is taken on the keys extracted above, not on the elements
+    // with a key-extracting comparator: how often a standard algorithm calls
+    // its comparator differs between standard libraries, and on the counted
+    // path every extraction is tallied. The pivot is the first sample element
+    // with the median key.
+    uint64_t med[kSample];
+    for (size_t i = 0; i < k; ++i) med[i] = keys[i];
+    std::nth_element(med, med + k / 2, med + k);
+    const uint64_t pk = med[k / 2];
+    size_t pi = 0;
+    while (keys[pi] != pk) ++pi;
+    const T pivot = smp[pi];
     info.n_sample = k;
     info.n_ge     = 0;
     size_t n_eq   = 0;

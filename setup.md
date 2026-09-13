@@ -99,17 +99,20 @@ patterns, 42 sizes from 0 to 10,000 (including every internal threshold) and
 bounds assertions on. Stable algorithms must match `std::stable_sort`
 exactly. The suite also checks that the verifier rejects wrong output.
 
-**The golden file.** The last test recomputes every row of
+**The golden file.** The last test recomputes
 [results/counts.csv](results/counts.csv): the deterministic numbers of every
-(size, key type, input, algorithm) cell at 1,000, 10,000 and 100,000 elements
-(reads, writes, comparisons, table and key traffic, cache-model misses,
-scratch memory, telemetry, two fingerprints), and fails on any difference.
+(size, key type, input, algorithm) cell at 1,000, 10,000, 100,000 and
+1,000,000 elements (reads, writes, comparisons, table and key traffic,
+cache-model misses, scratch memory, telemetry, two fingerprints), and fails
+on any difference. The rows up to 100,000 elements are recomputed by
+default, about a minute; `--golden-max-n 1000000` adds the million-element
+rows, about ten minutes more.
 A change to brainsort's planner or to a port is caught even when the output
 is still correct. When the change was intended, regenerate the file and
 commit it with the change:
 
 ```sh
-sh scripts/counts.sh                        # rewrites results/counts.csv, about two minutes
+sh scripts/counts.sh                        # rewrites results/counts.csv, about twelve minutes
 ./build-linux/sortbench_tests --golden      # only the golden comparison
 ```
 
@@ -134,15 +137,15 @@ sh scripts/bench.sh              # Linux, WSL, macOS, MSYS2
 ```
 
 The script builds, then runs every algorithm on every key type and input at
-1,000, 10,000, 100,000, 1,000,000 and 10,000,000 elements, then the public-API
-benchmark, then builds the website. Expect about an hour on a fast
-machine. It writes:
+1,000, 10,000, 100,000 and 1,000,000 elements, then the public-API benchmark,
+then builds the website. Expect about half an hour on a fast machine. It
+writes:
 
 | file | content |
 |---|---|
 | `results/<id>.csv` | the timing, one row per cell: wall time, CPU time, instructions, cycles, peak memory growth, repetitions |
 | `results/<id>.meta.json` | the run stamp: id, host, OS, CPU, compiler, when, the code fingerprint, sizes, repetitions, rounds, seed, pinned CPU |
-| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort at 100k, 1M, 10M elements), stamped the same way |
+| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort at 100k and 1M elements), stamped the same way |
 | `site/index.html` | the website, from everything in `results/` |
 
 `<id>` defaults to `<os>-<arch>-<compiler>`, e.g. `linux-x86-64-gcc13`.
@@ -161,16 +164,23 @@ shrink in proportion, never below three. Every run is verified. The
 deterministic columns are not recomputed by a timing run (`--timing-only`);
 the website takes them from the counts files.
 
-### The deterministic numbers at one million elements
+### Ten million elements
 
-`results/counts.csv` stops at 100,000 elements because the test suite
-recomputes it. The website also shows one million:
+Both scripts stop at one million elements by default. Ten million is an
+option; the website shows every size it finds in `results/`:
 
 ```sh
-COUNTS_SIZES=1000000 sh scripts/counts.sh      # -> results/counts-1000000.csv, about ten minutes
+COUNTS_SIZES=10000000 sh scripts/counts.sh     # -> results/counts-10000000.csv, over an hour
+BENCH_SIZES="1000 10000 100000 1000000 10000000" BENCH_API_MAX_N=10000000 sh scripts/bench.sh
 ```
 
-CI does this in its own job; the file is not committed.
+```powershell
+$env:COUNTS_SIZES = "10000000"; .\scripts\counts.ps1
+$env:BENCH_SIZES = "1000 10000 100000 1000000 10000000"; $env:BENCH_API_MAX_N = "10000000"; .\scriptsench.ps1
+```
+
+The counted file at ten million is not committed; the timing files carry
+whatever sizes they were measured at.
 
 ### Smaller runs
 
@@ -232,7 +242,6 @@ test suite holds every commit to them.
 | macOS ARM64 | `macos-latest`, Apple Clang | build, full CTest, benchmark |
 | Windows MSVC | `windows-latest` | build, full CTest, benchmark |
 | Windows MinGW | `windows-latest`, MSYS2 UCRT64 | build, full CTest, benchmark |
-| Deterministic counts at 1,000,000 | `ubuntu-24.04` | `scripts/counts.sh` for one million elements |
 | Sanitizers, libFuzzer, Linux -m32 | `ubuntu-24.04`, Clang / GCC | tests only |
 | Website | `ubuntu-24.04` | downloads every result, builds `site/`, uploads it (and, on `main`, publishes it on GitHub Pages) |
 

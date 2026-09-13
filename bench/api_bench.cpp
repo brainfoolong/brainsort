@@ -2,9 +2,9 @@
 // containers: what a user of brainsort::sort gets, including the cost of
 // building the records and permuting the elements.
 //
-//   brainsort_api_bench                 n = 100k, 1M and 10M, 5 repetitions
+//   brainsort_api_bench                 n = 100k and 1M, 5 repetitions
 //   brainsort_api_bench --quick         n = 100k, 3 repetitions (the CI smoke run)
-//   brainsort_api_bench --max-n 1000000 stop at one million elements
+//   brainsort_api_bench --max-n 10000000  ten million elements as well
 //   brainsort_api_bench --host TEXT     describe the machine in the stamp
 //
 // Prints a Markdown document: a line for humans, the run stamp of
@@ -140,7 +140,7 @@ void bench_type(const std::vector<size_t>& sizes, int reps, bool comparator = fa
 
 int main(int argc, char** argv) {
     bool quick = false;
-    size_t max_n = 10000000;
+    size_t max_n = 1000000;
     std::string host;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];

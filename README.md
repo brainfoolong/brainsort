@@ -49,8 +49,8 @@ whole contract is under [The library](#the-library).
 Measured against the upstream code as it ships (libstdc++ `std::sort` and
 `std::stable_sort`, Orson Peters' `pdqsort.h` in both forms, the gfx C++ port
 of TimSort) and against our own instrumented ports, on four key types (int32,
-double, int64, string) and twelve input patterns, at 1,000 to 10,000,000
-elements.
+double, int64, string) and twelve input patterns, at 1,000 to 1,000,000
+elements (ten million as an option).
 
 The table below is deterministic: it counts what each algorithm does, not how
 long it takes, so it is the same on every machine. It is derived from
@@ -62,7 +62,7 @@ opponents.
 <!-- scorecard:begin -->
 | deterministic, n = 100,000, 45 cells | against the stable sorts | against every sort |
 |---|---:|---:|
-| memory traffic (bytes moved): brainsort lowest or tied | **45 / 45** | 42 / 45 |
+| memory traffic (bytes moved): brainsort lowest or tied | **45 / 45** | 41 / 45 |
 | comparisons: brainsort lowest or tied | **40 / 45** | 40 / 45 |
 | scratch memory: brainsort lowest or tied | **16 / 45** | 12 / 45 |
 <!-- scorecard:end -->
@@ -82,7 +82,7 @@ nearly sorted input by a smaller one; where it loses, it loses on input that
 is already sorted, all equal or has a handful of distinct values, where the
 adaptive comparison sorts finish in one pass and brainsort's scout pass costs
 a little extra. Every such cell is on the page. The page also has the public
-API on plain vectors, from a hundred thousand to ten million elements,
+API on plain vectors, from a hundred thousand to a million elements,
 against `std::sort`, `std::stable_sort` and pdqsort, including the
 comparator overload.
 

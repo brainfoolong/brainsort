@@ -4,9 +4,11 @@
 # such set in results\ into the website.
 #
 #   .\scripts\bench.ps1 [sortbench options]      e.g. --reps 11
+#   $env:BENCH_SIZES = "1000 10000 100000 1000000 10000000"; $env:BENCH_API_MAX_N = "10000000"; .\scripts\bench.ps1
+#                                                ten million elements as well (an option, about an hour longer)
 #
-# Environment (same names as bench.sh): BENCH_ID, BENCH_HOST, BENCH_SIZES,
-# BENCH_API_MAX_N, BUILD_DIR (default build-win, built first; a multi-config
+# Environment (same names as bench.sh): BENCH_ID, BENCH_HOST, BENCH_SIZES
+# (default "1000 10000 100000 1000000"), BENCH_API_MAX_N (default 1000000), BUILD_DIR (default build-win, built first; a multi-config
 # build such as MSVC keeps its binaries in <BUILD_DIR>\Release), BENCH_NO_SITE.
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -18,9 +20,9 @@ $sb  = Join-Path $bin "sortbench.exe"
 $api = Join-Path $bin "brainsort_api_bench.exe"
 $id = if ($env:BENCH_ID) { $env:BENCH_ID } else { (& $sb --print-id).Trim() }
 $sizes = @()
-foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "1000 10000 100000 1000000 10000000" }) -split " ")) { $sizes += @("--n", $n) }
+foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "1000 10000 100000 1000000" }) -split " ")) { $sizes += @("--n", $n) }
 $hostText = if ($env:BENCH_HOST) { $env:BENCH_HOST } else { "" }
-$apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "10000000" }
+$apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "1000000" }
 New-Item -ItemType Directory -Force results | Out-Null
 
 Write-Host "== timing: results\$id.csv"

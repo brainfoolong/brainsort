@@ -203,34 +203,6 @@ jobs:
           path: results/windows-x86-64-mingw.*
           if-no-files-found: error
 
-  # Deterministic numbers at one million elements. results/counts.csv (1,000
-  # to 100,000) is committed and checked by every test job above; the
-  # million-element file is the same on every machine, so one job makes it.
-  counts-1m:
-    name: Deterministic counts at 1,000,000
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build g++-13
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 -DBRAINSORT_BUILD_TESTS=OFF
-      - name: Build
-        run: cmake --build build --target sortbench
-      - name: Count
-        env:
-          BUILD_DIR: build
-          COUNTS_SIZES: "1000000"
-        run: sh scripts/counts.sh
-      - name: Upload counts
-        uses: actions/upload-artifact@v7
-        with:
-          name: counts-1000000
-          path: results/counts-1000000.csv
-          if-no-files-found: error
-
   sanitizers:
     name: Clang ${{ matrix.name }}
     runs-on: ubuntu-24.04
@@ -300,7 +272,7 @@ jobs:
   # committed workstation results in results/, rendered into one page.
   site:
     name: Website
-    needs: [linux-gcc, linux-clang, linux-arm64, macos-arm64, windows-msvc, windows-mingw, counts-1m]
+    needs: [linux-gcc, linux-clang, linux-arm64, macos-arm64, windows-msvc, windows-mingw]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
@@ -311,12 +283,6 @@ jobs:
           pattern: bench-*
           path: results
           merge-multiple: true
-      - name: Download counts
-        uses: actions/download-artifact@v8
-        continue-on-error: true
-        with:
-          name: counts-1000000
-          path: results
       - name: Build the website
         run: python3 scripts/website.py --out site/index.html
       - name: Upload the website

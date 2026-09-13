@@ -252,8 +252,10 @@ void test_brainsort_adversarial() {
 // results/counts.csv is written by `sortbench --counts-only --all-types
 // --all-algos --all-datasets`. Every row is recomputed here and every
 // deterministic column must match exactly. std::sort and std::stable_sort
-// come from the toolchain's libstdc++ and may legitimately differ between
-// compiler versions, so a mismatch there is reported but is not a failure.
+// come from the toolchain's standard library, and gfx::timsort runs on its
+// std::vector and algorithms, so those may legitimately differ between
+// standard libraries (libstdc++, libc++, MSVC) and their versions; a
+// mismatch there is reported but is not a failure.
 // One dataset per algorithm is also run twice in a row: the two records must
 // be identical, which catches any dependence on real addresses.
 std::vector<std::string> split_csv(const std::string& line) {
@@ -267,7 +269,7 @@ std::vector<std::string> split_csv(const std::string& line) {
     return out;
 }
 
-bool toolchain_owned(const std::string& algo) { return algo == "std::sort" || algo == "std::stable_sort"; }
+bool toolchain_owned(const std::string& algo) { return algo == "std::sort" || algo == "std::stable_sort" || algo == "gfx::timsort"; }
 
 template <class T>
 void golden_type(const std::vector<std::map<std::string, std::string>>& rows, int& checked, int& mismatched, int& warned) {
@@ -295,7 +297,7 @@ void golden_type(const std::vector<std::map<std::string, std::string>>& rows, in
             if (it->second != vals[i]) diff += std::string(diff.empty() ? "" : ", ") + kDetColumns[i] + " " + it->second + " -> " + vals[i];
         }
         if (!diff.empty()) {
-            if (toolchain_owned(an)) { ++warned; std::printf("WARN: %s/%s on %s differs from results/counts.csv (libstdc++ version?): %s\n", type.c_str(), an.c_str(), ds.c_str(), diff.c_str()); }
+            if (toolchain_owned(an)) { ++warned; std::printf("WARN: %s/%s on %s differs from results/counts.csv (standard library?): %s\n", type.c_str(), an.c_str(), ds.c_str(), diff.c_str()); }
             else { ++mismatched; fail(type + "/" + an + " on " + ds + " differs from results/counts.csv: " + diff); }
         }
         if (!twice_done[an]) {
@@ -307,6 +309,8 @@ void golden_type(const std::vector<std::map<std::string, std::string>>& rows, in
         }
     }
 }
+
+size_t g_golden_max_n = 100000;
 
 void test_golden() {
 #ifdef SB_SOURCE_DIR
@@ -327,18 +331,35 @@ void test_golden() {
         for (size_t i = 0; i < header.size() && i < f.size(); ++i) row[header[i]] = f[i];
         rows.push_back(row);
     }
+    // The rows above g_golden_max_n (the million-element rows by default) are
+    // skipped: recomputing them takes ten minutes. --golden-max-n raises it.
+    size_t skipped = 0;
+    {
+        std::vector<std::map<std::string, std::string>> kept;
+        for (auto& row : rows) {
+            if (std::strtoull(row.at("n").c_str(), nullptr, 10) > g_golden_max_n) ++skipped;
+            else kept.push_back(std::move(row));
+        }
+        rows.swap(kept);
+    }
     int checked = 0, mismatched = 0, warned = 0;
     golden_type<Item>(rows, checked, mismatched, warned);
     golden_type<DblItem>(rows, checked, mismatched, warned);
     golden_type<I64Item>(rows, checked, mismatched, warned);
     golden_type<StrItem>(rows, checked, mismatched, warned);
-    std::printf("golden: %d rows of %s recomputed, %d mismatches, %d toolchain warnings\n", checked, path.c_str(), mismatched, warned);
+    std::printf("golden: %d rows of %s recomputed, %d mismatches, %d toolchain warnings, %zu rows above n = %zu skipped\n", checked, path.c_str(), mismatched, warned, skipped, g_golden_max_n);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const bool golden_only = argc > 1 && std::string(argv[1]) == "--golden";
+    bool golden_only = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--golden") golden_only = true;
+        else if (a == "--golden-max-n" && i + 1 < argc) g_golden_max_n = std::strtoull(argv[++i], nullptr, 10);
+        else { std::fprintf(stderr, "usage: sortbench_tests [--golden] [--golden-max-n N]\n"); return 2; }
+    }
     if (!golden_only) {
         test_type<Item>();
         test_type<DblItem>();

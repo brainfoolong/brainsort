@@ -9,7 +9,8 @@ Inputs, all discovered in the results directory:
   counts*.csv      the deterministic numbers (sortbench --counts-only): one
                    row per (size, key type, dataset, algorithm), the same on
                    every machine. counts.csv is the golden file of the test
-                   suite; counts-<n>.csv files add further sizes.
+                   suite (1,000 to 1,000,000); counts-<n>.csv files add
+                   further sizes, e.g. COUNTS_SIZES=10000000 scripts/counts.sh.
   <id>.csv         the timing of one machine (sortbench --timing-only), with
   <id>.meta.json   its run stamp: id, host, OS, CPU, compiler, code
                    fingerprint, settings.
@@ -570,7 +571,18 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
   details.section > summary { padding: 18px 18px; }
   details.section > summary::before { right: 16px; top: 18px; }
 }
-@media print { .panel { position: static; } details { border: 0; } }
+/* ---- motion: a short fade and lift as a block scrolls into view; nothing moves without JS or with reduced motion ---- */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity .55s ease-out, transform .55s cubic-bezier(.2,.7,.2,1); }
+.reveal.in { opacity: 1; transform: none; }
+.panel { transition: box-shadow .25s; }
+.panel.stuck { box-shadow: 0 6px 20px rgba(23,22,15,.08); }
+:root[data-theme="dark"] .panel.stuck { box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .panel.stuck { box-shadow: 0 6px 20px rgba(0,0,0,.4); } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+}
+@media print { .panel { position: static; } details { border: 0; } .reveal { opacity: 1; transform: none; } }
 </style>
 </head>
 <body>
@@ -581,10 +593,30 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
   <div class="links" id="links"></div>
   <p class="stamp" id="stamp"></p>
   <nav class="toc">
-    <a href="#glance">At a glance</a><a href="#reading">How to read this page</a><a href="#det">What each algorithm does</a>
+    <a href="#use">Use it</a><a href="#glance">At a glance</a><a href="#reading">How to read this page</a><a href="#det">What each algorithm does</a>
     <a href="#timing">Measured time per machine</a><a href="#api">The library on plain vectors</a><a href="#method">Method</a><a href="#tables">All numbers</a>
   </nav>
 </header>
+
+<section id="use">
+<span class="eyebrow">In your own code</span>
+<h2>Use it</h2>
+<p class="intro">Copy the <a id="link-header" href="#">single header</a> into your project, or add <code>include/</code> to your include path and include <code>brainsort/brainsort.hpp</code>. Header-only C++20, MIT licensed. GCC, Clang, MSVC and Apple Clang; x86-64 with AVX2 and BMI2 chosen at run time, ARM64 and 32-bit x86 with the same code minus the vector paths.</p>
+<pre><code>#include "brainsort.hpp"
+
+std::vector&lt;int&gt; v = ...;
+brainsort::sort(v);                                              // stable, by value
+brainsort::sort(v.begin(), v.end());                             // any random-access range
+brainsort::sort(rows, [](const Row&amp; r) { return r.id; });        // by a key
+brainsort::sort(rows, [](const Row&amp; r) { return std::pair(r.group, brainsort::desc(r.score)); });
+brainsort::sort(rows, [](const Row&amp; a, const Row&amp; b) { return a.name &lt; b.name; });  // a comparator: merge sort</code></pre>
+<div class="guide">
+<div class="g"><b>Keys</b><p>Any integer, bool, character type, float, double, enum, pointer, <code>std::string</code>, <code>std::string_view</code>, C string, <code>std::chrono</code> duration or time point, a <code>std::pair</code>, <code>std::tuple</code> or <code>std::array</code> of those, or <code>brainsort::desc(key)</code> for a reversed order. Your own key type takes a <code>brainsort::key_traits</code> specialisation.</p></div>
+<div class="g"><b>Elements</b><p>Anything move-assignable, in any random-access range: <code>std::vector</code>, <code>std::deque</code>, <code>std::array</code>, <code>std::span</code>, C arrays, pointer pairs. The keys are sorted first, then the elements are permuted once. Every overload is stable.</p></div>
+<div class="g"><b>Three things to know</b><p>It uses memory: about 1.5 small records per element while sorting, plus one element per element for the final permutation of plain structs, and it keeps up to 32 MiB of freed blocks for the next call (<code>brainsort::release_memory()</code> frees them). An arbitrary comparator gets a comparison sort, the library's own stable merge sort, without the radix wins. A range of 2<sup>32</sup> elements or more goes to <code>std::stable_sort</code>.</p></div>
+</div>
+<p class="note">The full contract, every overload and how the elements are handled: <a id="link-readme" href="#">README, The library</a>.</p>
+</section>
 
 <section id="glance">
 <span class="eyebrow">Overview</span>
@@ -622,6 +654,8 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
 <p class="intro">These numbers are the same on every computer. They are counted, not timed: how many bytes an algorithm moves, how many comparisons it makes, how much memory it asks for. Choose a metric:</p>
 <div class="chips" id="c-det-metric"></div>
 <p class="note" id="det-metric-note"></p>
+<p class="note" id="det-nocontest" hidden></p>
+<div id="det-contest">
 <div class="tiles" id="det-tiles"></div>
 <h3>Where brainsort wins and loses</h3>
 <p class="note" id="det-heat-note"></p><div class="scale"><span>brainsort behind</span><div class="bar"><i style="background:var(--loss-4)"></i><i style="background:var(--loss-3)"></i><i style="background:var(--loss-2)"></i><i style="background:var(--loss-1)"></i><i style="background:var(--neutral)"></i><i style="background:var(--win-1)"></i><i style="background:var(--win-2)"></i><i style="background:var(--win-3)"></i><i style="background:var(--win-4)"></i></div><span>brainsort ahead</span><span class="muted">grey: a tie within 5%. Each cell is the best other sort divided by brainsort.</span></div>
@@ -633,6 +667,7 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
 <h3>One cell in detail</h3>
 <div class="row inline"><span class="lbl" style="min-width:0">key type</span><select id="det-bar-t"></select><span class="lbl" style="min-width:0">input</span><select id="det-bar-d"></select></div>
 <div class="grid" id="det-bar"></div>
+</div>
 <details id="det-tables-wrap"><summary>Full tables for this metric<span class="muted" id="det-tables-sum"></span><span class="hint"></span></summary><div class="body" id="det-tables"></div></details>
 </section>
 
@@ -755,7 +790,8 @@ const timeStamp = s => s ? String(s).replace('T', ' ').replace('Z', ' UTC') : 'u
 
 // ---- metrics -------------------------------------------------------------------
 // Deterministic first, in order of what matters for real work: bytes moved,
-// comparisons, memory; then the finer counts. Measured: time first.
+// comparisons, memory; then the finer counts, table accesses last because
+// they have no contest. Measured: time first.
 const DET_METRICS = [
   { key: 'traffic', label: 'Memory traffic', unit: 'bytes', fmt: bytes, per: 'bytes', noun: 'bytes moved', less: 'less',
     plain: 'How many bytes the algorithm read and wrote in total: elements moved in the array and in scratch buffers, the count tables a radix sort keeps, and the string bytes it looked at. The closest single number to how much work the memory system does, and every algorithm pays it in the same currency.' },
@@ -773,10 +809,11 @@ const DET_METRICS = [
     plain: 'Misses in the model’s second level (1 MiB, 16-way), probed on an L1 miss.' },
   { key: 'flips', label: 'Compare flips', unit: '', fmt: compact, per: '', noun: 'compare flips', less: 'fewer',
     plain: 'How often a comparison’s outcome differed from the one before. A branch predictor learns patterns; flips are what it cannot learn, so this is a machine-independent proxy for mispredicted branches, the main cost of a quicksort on random data.' },
-  { key: 'table', label: 'Table accesses', unit: '', fmt: compact, per: '', noun: 'table accesses', less: 'fewer',
-    plain: 'Reads and writes of the histogram and offset tables a radix sort keeps. Comparison sorts have none.' },
   { key: 'keybytes', label: 'Key bytes (strings)', unit: 'bytes', fmt: bytes, per: 'bytes', noun: 'key bytes', less: 'fewer',
     plain: 'For string keys: how many bytes of key text were loaded, by comparisons (up to the first differing byte) and by the radix chunk extraction. Zero for fixed-size keys.' },
+  { key: 'table', label: 'Table accesses', unit: '', fmt: compact, per: '', noun: 'table accesses', less: 'fewer',
+    plain: 'Reads and writes of the count tables a radix sort keeps: one small array per pass, touched once per element to count and once to place. Comparison sorts have none; this is what a radix sort pays instead of comparisons. Memory traffic counts these bytes next to the element traffic.',
+    noContest: 'A large number here is not a loss, even though it looks like one. A radix sort touches a table of a few thousand entries a few times per element, and in exchange moves each element a few times instead of log n times and makes almost no comparisons. The table is capped at 13-bit digits, 32 KiB, so it stays in a first-level cache and each access is cheap. Every comparison sort has zero, so there is no contest to score. Memory traffic adds these table bytes to brainsort’s total and is the metric that decides; the full tables below carry the raw counts.' },
 ];
 const MEAS_METRICS = [
   { key: 'wall', label: 'Wall time', unit: 'ns', fmt: ns, per: 'ns', noun: 'time', less: 'less', faster: true,
@@ -1016,7 +1053,7 @@ function selectOptions(el, items, value, onChange) {
 }
 function refresh() {
   chips(document.getElementById('c-size'), DATA.sizes.map(n => ({ id: n, label: fmtN(n) + ' elements', cls: DET_SIZES.includes(n) ? '' : 'dim',
-    title: DET_SIZES.includes(n) ? '' : 'timing only in this build of the page: the deterministic numbers at this size come from the CI build' })), it => state.n === it.id, it => { state.n = it.id; });
+    title: DET_SIZES.includes(n) ? '' : 'timing only in this build of the page: no counted run at this size (scripts/counts.sh with COUNTS_SIZES adds one)' })), it => state.n === it.id, it => { state.n = it.id; });
   chips(document.getElementById('c-types'), [...DATA.types.map(t => ({ id: t.name, label: t.name, title: t.desc + ': ' + t.real })), { id: 'all', label: 'all types' }],
     it => it.id === 'all' ? state.types.length === DATA.types.length : state.types.length === 1 && state.types[0] === it.id,
     it => { state.types = it.id === 'all' ? DATA.types.map(t => t.name) : [it.id]; });
@@ -1051,6 +1088,8 @@ function renderHeader() {
     `<a href="${esc(DATA.repo)}">Source and README</a><a href="${esc(DATA.repo)}/blob/main/single_include/brainsort.hpp">Single header</a>` +
     `<a href="${esc(DATA.repo)}/blob/main/setup.md">Build, test, reproduce</a><a href="${esc(DATA.repo)}/tree/main/results">Raw data (CSV)</a>`;
   document.getElementById('link-setup').href = `${DATA.repo}/blob/main/setup.md`;
+  document.getElementById('link-header').href = `${DATA.repo}/blob/main/single_include/brainsort.hpp`;
+  document.getElementById('link-readme').href = `${DATA.repo}#the-library`;
   document.getElementById('stamp').textContent = `Generated ${timeStamp(DATA.generated)} from code ${DATA.code || 'unknown'}. ` +
     `${DATA.algos.length} algorithms, ${DATA.types.length} key types, ${DATA.datasets.length} input patterns, ${DATA.sizes.length} sizes (${DATA.sizes.map(fmtN).join(', ')} elements), ${DATA.platforms.length} machine${DATA.platforms.length === 1 ? '' : 's'}.`;
   document.getElementById('footer').innerHTML = `brainsort ${esc(DATA.version)} · MIT license · <a href="${esc(DATA.repo)}">${esc(DATA.repo.replace(/^https?:\/\//, ''))}</a> · ` +
@@ -1091,15 +1130,24 @@ function renderGlance() {
     `brainsort is a <b>stable</b> sort that avoids comparing keys wherever the key type allows it, and does less work when the input already has structure. ` +
     `On random keys it moves a fraction of the bytes a merge sort or a quicksort moves${r1 && rp ? ` (${bytes(DET.get(r1, 'traffic'))} against ${bytes(DET.get(rp, 'traffic'))} for branchless pdqsort on ${fmtN(n)} random int32 keys)` : ''} and makes almost no comparisons. ` +
     `It pays for that with scratch memory of about half the array, and it does not win everywhere: on input that is already sorted or has only a handful of distinct values, the adaptive comparison sorts finish in one pass and brainsort’s scout pass costs a little extra. Every such case is on this page.`;
-  document.getElementById('glance-note').textContent = `The tiles count every key type and every input pattern: ${cells} cells at n = ${fmtN(n)}${n !== nt ? ` for the deterministic numbers (no instrumented run at ${fmtN(nt)} in this build of the page)` : ''}. Change the size in the controls below to see another. A cell counts as a win when brainsort is best or tied.`;
+  document.getElementById('glance-note').textContent = `The tiles count every key type and every input pattern: ${cells} cells at n = ${fmtN(n)}${n !== nt ? ` for the deterministic numbers (no counted run at ${fmtN(nt)} in this build of the page)` : ''}. Change the size in the controls below to see another. A cell counts as a win when brainsort is best or tied.`;
 }
 
 // ---- the deterministic section --------------------------------------------------------
 function renderDet() {
   const m = detMetric(), n = detN();
   document.getElementById('det-fallback').innerHTML = n === state.n ? '' :
-    `<div class="callout warn">No instrumented run at ${fmtN(state.n)} elements is in this build of the page (the CI build adds one, about ten minutes of counting). The deterministic numbers below are at ${fmtN(n)}; the measured section has the ${fmtN(state.n)} timing.</div>`;
+    `<div class="callout warn">No counted run at ${fmtN(state.n)} elements is in this build of the page (scripts/counts.sh with COUNTS_SIZES=${state.n} adds one; at ten million that is over an hour of counting). The deterministic numbers below are at ${fmtN(n)}; the measured section has the ${fmtN(state.n)} timing.</div>`;
   document.getElementById('det-metric-note').textContent = m.plain + ' Lower is better.';
+  // A cost only brainsort and the radix baselines pay: no win/loss score, no heat map, no charts; the full tables still list it.
+  document.getElementById('det-contest').hidden = !!m.noContest;
+  const nc = document.getElementById('det-nocontest'); nc.hidden = !m.noContest; nc.textContent = m.noContest || '';
+  const wrap = document.getElementById('det-tables-wrap');
+  if (m.noContest) {
+    if (wrap.open) matrixTables(document.getElementById('det-tables'), m, (t, d) => detGet(n, t, d), document.getElementById('det-tables-sum'));
+    else document.getElementById('det-tables-sum').textContent = ` ${m.label.toLowerCase()}, n = ${fmtN(n)}`;
+    return;
+  }
   const sc = score((t, d) => detGet(n, t, d));
   tiles(document.getElementById('det-tiles'), m, sc, '', n);
   document.getElementById('det-heat-note').textContent = `${m.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s, at n = ${fmtN(n)}. Hover a cell for the numbers.`;
@@ -1108,7 +1156,6 @@ function renderDet() {
   sizesCharts(document.getElementById('det-sizes'), m, (nn, t, a) => { const r = detRow(nn, t, state.detDs, a); return r ? DET.get(r, state.det) : null; }, `${state.detDs} input`);
   const dd = DATA.datasets.find(d => d.name === state.detBarD);
   barChart(document.getElementById('det-bar'), m, detGet(n, state.detBarT, state.detBarD), `${state.detBarT} · ${state.detBarD} · n = ${fmtN(n)}`, (dd ? dd.description + '. ' : '') + m.label + ' of every sort shown.');
-  const wrap = document.getElementById('det-tables-wrap');
   if (wrap.open) matrixTables(document.getElementById('det-tables'), m, (t, d) => detGet(n, t, d), document.getElementById('det-tables-sum'));
   else document.getElementById('det-tables-sum').textContent = ` ${m.label.toLowerCase()}, n = ${fmtN(n)}`;
 }
@@ -1273,6 +1320,25 @@ document.getElementById('meas-tables').parentElement.addEventListener('toggle', 
 for (const id of ['timing', 'api']) document.getElementById(id).addEventListener('toggle', writeHash);
 readHash(); renderHeader(); renderMethod(); refresh(); render();
 window.addEventListener('hashchange', () => { readHash(); refresh(); render(); });
+
+// ---- motion: reveal blocks as they scroll into view, once each; shadow the control panel while it is stuck ----
+// The blocks are the static children of every section (heading, intro, tile grid, chart grid, ...), never the
+// re-rendered content inside them, so a chip click does not replay anything. The class is added here, not in the
+// markup, so the page is complete without JS.
+if ('IntersectionObserver' in window && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const blocks = document.querySelectorAll('main > section > *, main > details.section > summary, main > details.section > .body > *, footer');
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }, { rootMargin: '0px 0px -10% 0px', threshold: 0 });
+  const vh = innerHeight;
+  for (const b of blocks) {
+    if (b.getBoundingClientRect().top < vh * .9) continue;   // already on screen at load: no fade-in
+    b.classList.add('reveal'); io.observe(b);
+  }
+  const panel = document.getElementById('panel'), sentinel = document.createElement('div');
+  panel.before(sentinel);
+  new IntersectionObserver(([e]) => panel.classList.toggle('stuck', e.boundingClientRect.top < 0 && !e.isIntersecting), { threshold: 0 }).observe(sentinel);
+}
 </script>
 </body>
 </html>
