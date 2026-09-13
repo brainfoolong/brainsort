@@ -6,6 +6,16 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- `sort` on a plain slice of 64-bit keys (`i64`, `u64`, `isize`, `usize`,
+  `f64`, raw pointers, any `Key` whose radix form inverts) sorts the keys
+  themselves, 8 bytes per element instead of a 16-byte record with an
+  index, and writes them back; the memory of such a sort halves. `-0.0`
+  is kept: the negative zeros are put back by their rank among the zeros.
+  At 100,000 elements (7800X3D, Windows): `i64` random 0.99 to about
+  0.75 ms, `f64` random 0.98 to about 0.8 ms, few distinct values 0.22 to
+  0.17 and 0.30 to 0.23 ms; the random rows went from 0.90x of the fastest
+  radix crate to level or ahead; on WSL2 `i64` random 0.92 to 0.80 ms and
+  `f64` random 0.95 to 0.77 ms.
 - `sort_by` sorts elements over 16 bytes through an array of indices and
   permutes them once, as the C++ comparator overload does: the comparison
   sort moves 4 bytes per element instead of the element, and a comparator

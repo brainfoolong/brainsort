@@ -189,6 +189,48 @@ unsafe fn scout_avx2_64<T: Elem, const F64: bool>(p: *const T, n: usize) -> Scou
     }
 }
 
+/// Vectorised scout for 8-byte elements that are the key, 8 elements per
+/// block: two vectors of four, each compared with the vector one element
+/// behind it; bit e of the block mask belongs to element e.
+#[target_feature(enable = "avx2")]
+unsafe fn scout_avx2_k64<T: Elem>(p: *const T, n: usize) -> ScoutResult {
+    const BIT_OF: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    let mut r = ScoutResult::default();
+    // SAFETY: the caller passes n >= 1 elements of 8 bytes.
+    unsafe {
+        let vk0 = _mm256_set1_epi64x(skey64(&*p));
+        let mut vmask = _mm256_setzero_si256();
+        let (mut i, mut next_check) = (1usize, COMMIT_BLOCK);
+        while i + 8 <= n {
+            let ld = |k: usize| _mm256_loadu_si256(p.add(k) as *const __m256i);
+            let (c0, c1) = (ld(i), ld(i + 4));
+            let (q0, q1) = (ld(i - 1), ld(i + 3));
+            vmask = _mm256_or_si256(vmask, _mm256_or_si256(_mm256_xor_si256(c0, vk0), _mm256_xor_si256(c1, vk0)));
+            let mm = |x: __m256i| _mm256_movemask_pd(_mm256_castsi256_pd(x)) as u32;
+            let d = mm(_mm256_cmpgt_epi64(q0, c0)) | (mm(_mm256_cmpgt_epi64(q1, c1)) << 4);
+            let u = mm(_mm256_cmpgt_epi64(c0, q0)) | (mm(_mm256_cmpgt_epi64(c1, q1)) << 4);
+            scout_block::<8>(&mut r, d, u, i, &BIT_OF);
+            if i >= next_check {
+                next_check += COMMIT_BLOCK;
+                if commit_now(&r, i + 8) {
+                    r.committed = true;
+                    break;
+                }
+            }
+            i += 8;
+        }
+        let mut lanes = [0u64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vmask);
+        r.mask = lanes[0] | lanes[1] | lanes[2] | lanes[3];
+        if r.committed {
+            return r;
+        }
+        scout_tail(&mut r, p, i, n);
+        finish_runs(&mut r, n);
+        r
+    }
+}
+
 /// The vector scout of an element type with a SIMD layout.
 ///
 /// # Safety
@@ -199,6 +241,7 @@ pub unsafe fn scout_avx2<T: Elem>(p: *const T, n: usize) -> ScoutResult {
     unsafe {
         match T::SIMD {
             SimdKind::I32 => scout_avx2_32(p, n),
+            SimdKind::K64 => scout_avx2_k64(p, n),
             SimdKind::F64 => scout_avx2_64::<T, true>(p, n),
             _ => scout_avx2_64::<T, false>(p, n),
         }
@@ -302,6 +345,11 @@ unsafe fn lt_mask<T: Elem>(v: __m256i, vpivot: __m256i, vk0: __m256i, vmask: &mu
                 let m = _mm256_movemask_pd(_mm256_castsi256_pd(lt)) as u32;
                 (m & 1) | ((m >> 1) & 2)
             }
+            SimdKind::K64 => {
+                *vmask = _mm256_or_si256(*vmask, _mm256_xor_si256(v, vk0));
+                let lt = _mm256_cmpgt_epi64(vpivot, v); // every lane is a key
+                _mm256_movemask_pd(_mm256_castsi256_pd(lt)) as u32 // one bit per element
+            }
             _ => {
                 // SAFETY: called within an AVX2 function.
                 let sign = _mm256_set1_epi64x(0x8000_0000_0000_0000u64 as i64);
@@ -329,7 +377,7 @@ unsafe fn key0_vec<T: Elem>(e: &T) -> __m256i {
     unsafe {
         match T::SIMD {
             SimdKind::I32 => _mm256_set1_epi32(skey32(e)),
-            SimdKind::I64 => _mm256_set1_epi64x(skey64(e)),
+            SimdKind::I64 | SimdKind::K64 => _mm256_set1_epi64x(skey64(e)),
             _ => _mm256_set1_epi64x(T::radix_key(*e, 0).to_u64() as i64),
         }
     }
@@ -344,6 +392,8 @@ unsafe fn fold_mask<T: Elem>(vmask: __m256i) -> u64 {
         unsafe { _mm256_storeu_si256(l.as_mut_ptr() as *mut __m256i, vmask) };
         if T::SIMD == SimdKind::I32 {
             ((l[0] | l[1] | l[2] | l[3]) as u32) as u64 // int32 keys in the low half of every 64-bit lane
+        } else if T::SIMD == SimdKind::K64 {
+            l[0] | l[1] | l[2] | l[3] // every lane a key
         } else {
             l[0] | l[2] // 64-bit keys in lanes 0 and 2
         }

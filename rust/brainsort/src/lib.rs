@@ -43,7 +43,11 @@
 //! the elements are permuted once. Keys of up to 32 bits become 8-byte
 //! records, up to 64 bits 16-byte records, a string a 16-byte
 //! pointer-and-length record, anything else a composite record sorted
-//! chunk by chunk.
+//! chunk by chunk. A plain slice of 64-bit numbers or pointers needs no
+//! index: the keys themselves are sorted, 8 bytes per element, and written
+//! back (the two zeros of an `f64` share a key and are put back by their
+//! rank among the zeros); plain 32-bit numbers are written back from their
+//! records.
 //!
 //! # Floating point
 //!
@@ -54,8 +58,9 @@
 //!
 //! # Memory, failure, limits
 //!
-//! - **Memory.** n records of 8, 16 or more bytes, plus the algorithm's
-//!   scratch of about n/2 records on full-entropy input, plus count tables
+//! - **Memory.** n records of 8, 16 or more bytes (8 for a plain slice of
+//!   64-bit numbers, which needs no index), plus the algorithm's scratch
+//!   of about n/2 records on full-entropy input, plus count tables
 //!   of at most 64 KiB (about 400 KiB for a part that is scattered beyond
 //!   the cache). Elements are permuted through a buffer of n elements, or
 //!   in place through cycles if that buffer cannot be allocated. Sorted and
@@ -188,7 +193,7 @@ pub mod internals {
     pub use crate::cpu::{cache_sizes, have_avx2, have_bmi2};
     pub use crate::infer::{PlainBytes, sort_by_inferred_impl};
     pub use crate::memory::DefaultAlloc;
-    pub use crate::record::{CompRec, Rec32, Rec64, Record, StrRec};
+    pub use crate::record::{CompRec, Key64, Rec32, Rec64, Record, StrRec};
     pub use crate::view::*;
     /// The comparator sort with key inference: a prototype.
     pub fn sort_by_inferred<T: PlainBytes, F: FnMut(&T, &T) -> core::cmp::Ordering>(v: &mut [T], cmp: F) {

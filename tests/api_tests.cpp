@@ -396,6 +396,62 @@ void test_float_order(const char* name) {
     std::printf("%-40s %s\n", (std::string(name) + " total order").c_str(), g_failures == failures_before ? "ok" : "FAILED");
 }
 
+// ---- plain 64-bit keys ------------------------------------------------------------------------
+// The keys-only route: the sorted keys are written back bit for bit, the
+// two zeros of a double in input order. NaNs are covered by test_float_order.
+template <class K>
+void check_plain(const std::vector<K>& v, const std::string& ctx) {
+    std::vector<K> a = v, b = v;
+    brainsort::sort(a);
+    std::stable_sort(b.begin(), b.end(), [](const K& x, const K& y) { return Natural<K>::less(x, y); });
+    bool same = a.size() == b.size();
+    for (size_t i = 0; same && i < a.size(); ++i) same = std::memcmp(&a[i], &b[i], sizeof(K)) == 0;
+    CHECK(same, ctx + " n=" + std::to_string(v.size()) + ": brainsort::sort differs from std::stable_sort");
+}
+void test_plain_keys(size_t max_n) {
+    const int failures_before = g_failures;
+    std::mt19937_64 rng(5);
+    for (size_t n : {size_t{33}, size_t{1000}, size_t{4097}, size_t{100000}}) {
+        if (n > max_n) continue;
+        std::vector<double> f, zeros, nearly;
+        std::vector<uint64_t> u;
+        std::vector<int64_t>  few;
+        std::vector<size_t>   rev;
+        for (size_t i = 0; i < n; ++i) {
+            switch (rng() % 12) {
+                case 0: case 1: case 2: f.push_back(-0.0); break;
+                case 3: case 4: case 5: f.push_back(0.0); break;
+                case 6: f.push_back(INFINITY); break;
+                case 7: f.push_back(-INFINITY); break;
+                case 8: f.push_back(static_cast<double>(rng() % 100) - 50.0); break;
+                default: { uint64_t bits = rng(); double d; std::memcpy(&d, &bits, sizeof d); f.push_back(std::isnan(d) ? 1.5 : d); }
+            }
+            zeros.push_back(i % 3 == 0 ? -0.0 : 0.0);
+            nearly.push_back(i % 7 == 0 ? -0.0 : static_cast<double>(i / 4) - static_cast<double>(n / 8));
+            u.push_back(rng());
+            few.push_back(static_cast<int64_t>(rng() % 7) - 3);
+            rev.push_back(n - i);
+        }
+        check_plain(f, "double with zeros");
+        check_plain(zeros, "double all zeros");
+        check_plain(nearly, "double nearly sorted with negative zeros");
+        check_plain(u, "uint64 random");
+        check_plain(few, "int64 few unique");
+        check_plain(rev, "size_t reversed");
+    }
+    {   // pointers, by address (a char pointer would be a C string)
+        std::vector<int> ints(5000);
+        std::vector<const int*> p, w;
+        for (const int& c : ints) p.push_back(&c);
+        std::shuffle(p.begin(), p.end(), rng);
+        w = p;
+        brainsort::sort(p);
+        std::sort(w.begin(), w.end());
+        CHECK(p == w, "pointers by address");
+    }
+    std::printf("%-40s %s\n", "plain 64-bit keys", g_failures == failures_before ? "ok" : "FAILED");
+}
+
 // ---- containers, iterators and element kinds ------------------------------------------------
 struct Row {
     int64_t     id;
@@ -595,8 +651,47 @@ void alloc_failure_case(const char* name, const std::string& pattern, size_t n) 
     }
 }
 
+// The keys-only route of a plain vector of 64-bit keys: the key array, the
+// scratch, and for doubles the ranks of the negative zeros; each failure
+// falls back to std::stable_sort and the result is the same, bit for bit.
+template <class K>
+void alloc_failure_plain(const char* name, const std::vector<K>& in) {
+    std::vector<K> w = in;
+    std::stable_sort(w.begin(), w.end(), [](const K& x, const K& y) { return Natural<K>::less(x, y); });
+    auto check = [&](const std::vector<K>& v, const std::string& ctx) {
+        bool same = v.size() == w.size();
+        for (size_t i = 0; same && i < v.size(); ++i) same = std::memcmp(&v[i], &w[i], sizeof(K)) == 0;
+        CHECK(same, ctx);
+    };
+    FailAlloc::count = 0; FailAlloc::fail_at = ~size_t(0); FailAlloc::live = 0;
+    {
+        std::vector<K> v = in;
+        brainsort::detail::sort_by_key_impl<FailAlloc>(v.begin(), v.end(), std::identity{});
+        check(v, std::string(name) + " baseline");
+    }
+    const size_t total = FailAlloc::count;
+    CHECK(FailAlloc::live == 0, std::string(name) + ": scratch leaked");
+    CHECK(total > 0, std::string(name) + ": the baseline did not allocate");
+    for (size_t k = 0; k <= total; ++k) {
+        FailAlloc::count = 0; FailAlloc::fail_at = k; FailAlloc::live = 0;
+        std::vector<K> v = in;
+        brainsort::detail::sort_by_key_impl<FailAlloc>(v.begin(), v.end(), std::identity{});
+        check(v, std::string(name) + " allocation " + std::to_string(k) + " of " + std::to_string(total) + " failed");
+        CHECK(FailAlloc::live == 0, std::string(name) + " allocation " + std::to_string(k) + " failed: scratch leaked");
+    }
+}
+
 void test_allocation_failure() {
     const int failures_before = g_failures;
+    {
+        std::mt19937_64 rng(5);
+        std::vector<double> d;
+        for (size_t i = 0; i < 5000; ++i) d.push_back(i % 5 == 0 ? -0.0 : (i % 5 == 1 ? 0.0 : static_cast<double>(rng() % 1000) - 500.0));
+        alloc_failure_plain<double>("double with zeros", d);
+        std::vector<uint64_t> u;
+        for (size_t i = 0; i < 5000; ++i) u.push_back(rng());
+        alloc_failure_plain<uint64_t>("uint64 random", u);
+    }
     alloc_failure_case<int32_t>("int32", "random", 5000);
     alloc_failure_case<int32_t>("int32", "nearly_sorted", 20000);
     alloc_failure_case<int32_t>("int32", "few_unique", 5000);
@@ -940,6 +1035,7 @@ int main(int argc, char** argv) {
 
     test_float_order<float>("float");
     test_float_order<double>("double");
+    test_plain_keys(big);
     test_containers();
     test_allocation_failure();
     test_comparator(big);

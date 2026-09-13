@@ -318,10 +318,43 @@ BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2_64(const T* p, size_t n) {
     finish_runs(r, n);
     return r;
 }
+BRAINSORT_TARGET_AVX2 inline unsigned mask_pd(__m256i x) { return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(x))); }
+// Vectorised scout for 8-byte elements that are the key (Key64), 8 elements
+// per block: two vectors of four, each compared with the vector one element
+// behind it; bit e of the block mask belongs to element e.
+template <class T>
+BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2_k64(const T* p, size_t n) {
+    static_assert(sizeof(T) == 8, "SimdKind::k64 promises 8-byte elements");
+    static constexpr uint8_t bit_of[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    ScoutResult r;
+    const __m256i vk0   = _mm256_set1_epi64x(skey64(p[0]));
+    __m256i       vmask = _mm256_setzero_si256();
+    size_t i = 1, next_check = kCommitBlock;
+    for (; i + 8 <= n; i += 8) {
+        const __m256i c0 = ld256(p + i), c1 = ld256(p + i + 4);
+        const __m256i q0 = ld256(p + i - 1), q1 = ld256(p + i + 3);
+        vmask = _mm256_or_si256(vmask, _mm256_or_si256(_mm256_xor_si256(c0, vk0), _mm256_xor_si256(c1, vk0)));
+        const unsigned d = mask_pd(_mm256_cmpgt_epi64(q0, c0)) | (mask_pd(_mm256_cmpgt_epi64(q1, c1)) << 4);
+        const unsigned u = mask_pd(_mm256_cmpgt_epi64(c0, q0)) | (mask_pd(_mm256_cmpgt_epi64(c1, q1)) << 4);
+        scout_block<8>(r, d, u, i, bit_of);
+        if (i >= next_check) {
+            next_check += kCommitBlock;
+            if (commit_now(r, i + 8)) { r.committed = true; break; }
+        }
+    }
+    alignas(32) uint64_t lanes[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), vmask);
+    r.mask = lanes[0] | lanes[1] | lanes[2] | lanes[3];
+    if (r.committed) return r;
+    scout_tail(r, p, i, n);
+    finish_runs(r, n);
+    return r;
+}
 template <class T>
 BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2(const T* p, size_t n) {
     constexpr SimdKind kind = elem_traits<T>::simd;
     if constexpr (kind == SimdKind::i32) return scout_avx2_32(p, n);
+    else if constexpr (kind == SimdKind::k64) return scout_avx2_k64(p, n);
     else if constexpr (kind == SimdKind::f64) return scout_avx2_64<T, true>(p, n);
     else return scout_avx2_64<T, false>(p, n);
 }
@@ -1003,6 +1036,10 @@ BRAINSORT_TARGET_AVX2 inline unsigned lt_mask(__m256i v, __m256i vpivot, __m256i
         const __m256i lt = _mm256_cmpgt_epi64(vpivot, v);                            // key lanes 0,2
         const unsigned m = static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(lt)));
         return (m & 1) | ((m >> 1) & 2);
+    } else if constexpr (kind == SimdKind::k64) {
+        vmask = _mm256_or_si256(vmask, _mm256_xor_si256(v, vk0));
+        const __m256i lt = _mm256_cmpgt_epi64(vpivot, v);                            // every lane is a key
+        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(lt)));   // one bit per element
     } else {
         // Compare on the total-order keys (signed compare of sign-flipped keys ==
         // unsigned compare), so the vector loop agrees with the scalar tail and
@@ -1027,7 +1064,7 @@ template <class T> BRAINSORT_TARGET_AVX2 inline __m256i pivot_vec(T pivot) { ret
 template <class T> BRAINSORT_TARGET_AVX2 inline __m256i key0_vec(T e) {
     constexpr SimdKind kind = elem_traits<T>::simd;
     if constexpr (kind == SimdKind::i32) return _mm256_set1_epi32(skey32(e));
-    else if constexpr (kind == SimdKind::i64) return _mm256_set1_epi64x(skey64(e));
+    else if constexpr (kind == SimdKind::i64 || kind == SimdKind::k64) return _mm256_set1_epi64x(skey64(e));
     else return _mm256_set1_epi64x(static_cast<long long>(elem_traits<T>::radix_key(e, 0)));
 }
 template <class T> BRAINSORT_TARGET_AVX2 inline uint64_t fold_mask(__m256i vmask) {
@@ -1035,6 +1072,8 @@ template <class T> BRAINSORT_TARGET_AVX2 inline uint64_t fold_mask(__m256i vmask
     _mm256_store_si256(reinterpret_cast<__m256i*>(l), vmask);
     if constexpr (elem_traits<T>::simd == SimdKind::i32) {   // int32 keys in the low half of every 64-bit lane
         return static_cast<uint32_t>(l[0] | l[1] | l[2] | l[3]);
+    } else if constexpr (elem_traits<T>::simd == SimdKind::k64) {   // every lane a key
+        return l[0] | l[1] | l[2] | l[3];
     } else {                                                  // 64-bit keys in lanes 0 and 2
         return l[0] | l[2];
     }
@@ -1966,7 +2005,7 @@ template <class A, class K>
 inline bool split2(A a, A buf, size_t n, size_t cap, int chunk, const K* vk, K t1, K t2, K t3,
                    uint64_t& xm, size_t& c0_lt, size_t& c0_ge, size_t& n_ge, bool& known) {
 #ifdef BRAINSORT_X86_64
-    if constexpr (!A::counted && A::traits::simd == SimdKind::i32) {
+    if constexpr (!A::counted && (A::traits::simd == SimdKind::i32 || A::traits::simd == SimdKind::k64)) {
         if (chunk == 0 && have_avx2()) return split2_avx2(a, buf, n, cap, vk, t1, t2, t3, xm, c0_lt, c0_ge, n_ge, known);
     }
 #endif
@@ -1975,7 +2014,7 @@ inline bool split2(A a, A buf, size_t n, size_t cap, int chunk, const K* vk, K t
 template <class A, class K>
 inline void partition2(A src, size_t m, A dst, size_t o0, size_t o1, size_t end1, int chunk, K t) {
 #ifdef BRAINSORT_X86_64
-    if constexpr (!A::counted && A::traits::simd == SimdKind::i32) {
+    if constexpr (!A::counted && (A::traits::simd == SimdKind::i32 || A::traits::simd == SimdKind::k64)) {
         if (chunk == 0 && have_avx2()) { partition2_avx2(src.data(), m, dst.data(), o0, o1, end1, t); return; }
     }
 #endif

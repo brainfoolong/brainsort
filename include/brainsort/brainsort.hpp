@@ -61,6 +61,7 @@
 #include <functional>
 #include <iterator>
 #include <new>
+#include <optional>
 #include <ranges>
 #include <type_traits>
 #include <utility>
@@ -519,6 +520,55 @@ inline void small_sort(It first, size_t n, Less& less) {
     }
 }
 
+// A range whose elements are 64-bit keys that invert from their radix form
+// (int64, uint64, double, a pointer): the keys themselves are sorted, 8
+// bytes per element and no index, and written back from their radix form.
+// The two zeros of a double share a key and the sort keeps them in input
+// order, so the negative ones are put back by their rank among the zeros.
+template <class Alloc, class It, class K>
+inline void sort_keys_only(It first, size_t n) {
+    constexpr bool dbl = std::is_same_v<K, double>;
+    Buf<Key64, Alloc> keys(n);
+    Key64* k = keys.data();
+    brain_detail::Scratch<View<Key64, Alloc>> scratch;   // the sorted keys may end up in its buffer
+    size_t neg_zeros = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const K& v = first[static_cast<std::ptrdiff_t>(i)];
+        k[i] = key64_of<K>(v);
+        if constexpr (dbl) neg_zeros += is_negative_zero(v);
+    }
+    std::optional<Buf<uint32_t, Alloc>> ranks;   // of the negative zeros among the zeros, in input order
+    if constexpr (dbl) {
+        if (neg_zeros) {
+            uint32_t* r = ranks.emplace(neg_zeros).data();
+            size_t    z = 0, j = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const double d = first[static_cast<std::ptrdiff_t>(i)];
+                if (d == 0.0) {
+                    if (is_negative_zero(d)) r[j++] = static_cast<uint32_t>(z);
+                    ++z;
+                }
+            }
+        }
+    }
+    if (!brainsort_impl<0>(View<Key64, Alloc>(k, n), scratch, true)) k = scratch.buffer();
+    if constexpr (dbl) {
+        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = double_of(k[i]);
+        if (neg_zeros) {
+            // the zeros are the keys of signed value 0: the first is found by bisection
+            size_t lo = 0, hi = n;
+            while (lo < hi) {
+                const size_t mid = lo + (hi - lo) / 2;
+                if (k[mid].key < 0) lo = mid + 1; else hi = mid;
+            }
+            const uint32_t* r = ranks->data();
+            for (size_t j = 0; j < neg_zeros; ++j) first[static_cast<std::ptrdiff_t>(lo + r[j])] = -0.0;
+        }
+    } else {
+        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = key_of<K>(k[i]);
+    }
+}
+
 // Sort [first, last) by proj(element), through records of type Rec. Returns
 // false, with the range untouched, if the keys could not be represented.
 template <class Alloc, class It, class Proj>
@@ -528,7 +578,11 @@ inline bool sort_records(It first, size_t n, Proj& proj, bool sparse) {
     using K   = key_of_t<It, Proj>;
     using Rec = record_t<K>;
     constexpr bool materialise = !std::is_reference_v<R> && kParts<K>.owning;   // keys are temporaries that own their bytes
-    constexpr bool self_double = std::is_same_v<Proj, std::identity> && std::is_same_v<K, double> && std::is_same_v<T, double>;
+    constexpr bool self_keyed  = std::is_same_v<Proj, std::identity> && std::is_same_v<K, T>;
+    if constexpr (self_keyed && std::is_same_v<Rec, Rec64> && (exact_single_v<K> || std::is_same_v<K, double>)) {
+        sort_keys_only<Alloc, It, K>(first, n);
+        return true;
+    }
 
     Buf<Rec, Alloc> recs(n);
     Rec* rec = recs.data();
@@ -543,16 +597,12 @@ inline bool sort_records(It first, size_t n, Proj& proj, bool sparse) {
         for (size_t i = 0; i < n; ++i) {
             decltype(auto) k = std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]);
             if (!build_record<K>(rec[i], k, static_cast<uint32_t>(i))) return false;
-            if constexpr (self_double) note_negative_zero(rec[i], k);
         }
         if (!brainsort_impl<0>(View<Rec, Alloc>(rec, n), scratch, true)) rec = scratch.buffer();
     }
     // The elements are the keys and the key inverts: write the sorted keys back.
-    if constexpr (std::is_same_v<Proj, std::identity> && exact_single_v<K> && std::is_same_v<K, T> &&
-                  (std::is_same_v<Rec, Rec32> || std::is_same_v<Rec, Rec64>)) {
+    if constexpr (self_keyed && exact_single_v<K> && std::is_same_v<Rec, Rec32>) {
         for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = key_of<K>(rec[i]);
-    } else if constexpr (self_double) {
-        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = double_of(rec[i]);
     } else {
         permute<Alloc>(first, rec, n, sparse);
     }

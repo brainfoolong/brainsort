@@ -122,6 +122,63 @@ fn self_keyed() {
     test_self_keyed::<u128>("u128", mid);
 }
 
+/// Plain slices of 64-bit keys take the keys-only route: the sorted keys
+/// are written back bit for bit, the two zeros of an `f64` in input order.
+fn check_plain<K: Natural + Clone + std::fmt::Debug + brainsort::Key>(v: &[K], ctx: &str) {
+    let mut a = v.to_vec();
+    let mut b = v.to_vec();
+    brainsort::sort(&mut a);
+    b.sort_by(|x, y| x.natural_cmp(y));
+    for i in 0..a.len() {
+        assert!(a[i].identical(&b[i]), "{ctx} n={}: brainsort::sort differs from a stable sort at {i}: {:?} vs {:?}", v.len(), a[i], b[i]);
+    }
+}
+#[test]
+fn plain_64bit_keys() {
+    let mut rng = Rng::new(5);
+    let sizes: &[usize] = if quick() { &[33, 1000, 4097] } else { &[33, 1000, 4097, 100_000] };
+    for &n in sizes {
+        let pick = |rng: &mut Rng| -> f64 {
+            match rng.next() % 16 {
+                0..=2 => -0.0,
+                3..=5 => 0.0,
+                6 => f64::NAN,
+                7 => -f64::NAN,
+                8 => f64::INFINITY,
+                9 => f64::NEG_INFINITY,
+                10 => (rng.next() % 100) as f64 - 50.0,
+                _ => f64::from_bits(rng.next()), // any bit pattern, NaNs with payloads included
+            }
+        };
+        let f: Vec<f64> = (0..n).map(|_| pick(&mut rng)).collect();
+        check_plain(&f, "f64 with zeros");
+        let zeros: Vec<f64> = (0..n).map(|i| if i % 3 == 0 { -0.0 } else { 0.0 }).collect();
+        check_plain(&zeros, "f64 all zeros");
+        let mut sorted_zeros: Vec<f64> = (0..n).map(|i| (i / 4) as f64 - (n / 8) as f64).collect();
+        for i in (0..n).step_by(7) {
+            sorted_zeros[i] = -0.0;
+        }
+        check_plain(&sorted_zeros, "f64 nearly sorted with negative zeros");
+        let u: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+        check_plain(&u, "u64 random");
+        let i: Vec<i64> = (0..n).map(|_| (rng.next() % 7) as i64 - 3).collect();
+        check_plain(&i, "i64 few unique");
+        let s: Vec<usize> = (0..n).map(|i| n - i).collect();
+        check_plain(&s, "usize reversed");
+    }
+    // raw pointers, by address
+    let bytes = vec![0u8; 5000];
+    let mut p: Vec<*const u8> = bytes.iter().map(|b| b as *const u8).collect();
+    for i in (1..p.len()).rev() {
+        let j = rng.next() as usize % (i + 1);
+        p.swap(i, j);
+    }
+    let mut w = p.clone();
+    brainsort::sort(&mut p);
+    w.sort();
+    assert_eq!(p, w, "pointers by address");
+}
+
 #[test]
 fn float_order() {
     for n in [16usize, 40, 5000, 70000] {

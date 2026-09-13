@@ -6,7 +6,7 @@
 use crate::algorithm::displaced::sort_displaced;
 use crate::algorithm::{Scratch, brainsort_impl};
 use crate::key::{Key, Prescan};
-use crate::record::{CompRec, Rec32, Rec64, Record, StrRec, double_of, key_of32, key_of64, note_negative_zero};
+use crate::record::{CompRec, Key64, Rec32, Rec64, Record, StrRec, key_of32, radix64_of};
 use crate::view::{Alloc, AllocError, Arr, Elem, NoHooks, SimdKind, View, alloc_array, free_array};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
@@ -581,7 +581,6 @@ pub(crate) fn small_sort<T>(v: &mut [T], mut less: impl FnMut(&T, &T) -> bool) {
 fn sort_records_as<T, P: Proj<T>, A: Alloc, R: Record>(v: &mut [T], proj: &mut P, sparse: bool) -> Result<bool, AllocError> {
     let n = v.len();
     let materialise = P::OWNED && <P::K as Key>::SHAPE.has_bytes(); // keys are temporaries that own their bytes
-    let self_double = P::IDENTITY && <P::K as Key>::PRESCAN == Prescan::F64 && core::mem::size_of::<R>() == 16;
     let recs = Buf::<R, A>::new(n)?;
     let rec = recs.ptr();
     let mut scratch = Scratch::<View<R, NoHooks, A>>::new(); // the sorted records may end up in its buffer
@@ -603,40 +602,22 @@ fn sort_records_as<T, P: Proj<T>, A: Alloc, R: Record>(v: &mut [T], proj: &mut P
         for (i, t) in v.iter().enumerate() {
             let k = proj.hold(t);
             match R::build(&*k, i as u32) {
-                Some(mut r) => {
-                    if self_double {
-                        // SAFETY: self_double means K is f64 and R is Rec64.
-                        unsafe {
-                            let d = *(&*k as *const P::K as *const f64);
-                            note_negative_zero(&mut *(&mut r as *mut R as *mut Rec64), d);
-                        }
-                    }
-                    // SAFETY: i < n records.
-                    unsafe { ptr::write(rec.add(i), r) }
-                }
+                // SAFETY: i < n records.
+                Some(r) => unsafe { ptr::write(rec.add(i), r) },
                 None => return Ok(false),
             }
         }
     }
     let in_src = brainsort_impl(View::<R, NoHooks, A>::new(rec, n), &mut scratch, true, 0)?;
     let rec: *mut R = if in_src { rec } else { scratch.buffer().expect("the result is in the scratch buffer") };
-    let write_back = P::IDENTITY && <P::K as Key>::EXACT_FIXED && core::mem::size_of::<R>() <= 16 && !<R as Elem>::CHUNKED;
+    let write_back = P::IDENTITY && <P::K as Key>::EXACT_FIXED && core::mem::size_of::<R>() == 8 && !<R as Elem>::CHUNKED;
     if write_back {
         // The elements are the keys and the key inverts: write the sorted keys back.
         let first = v.as_mut_ptr() as *mut P::Owned;
         for i in 0..n {
             // SAFETY: IDENTITY means T is K is P::Owned (a plain fixed key
-            // without a destructor); R is Rec32 or Rec64 by size.
-            unsafe {
-                let radix = if core::mem::size_of::<R>() == 8 { key_of32(&*(rec.add(i) as *const Rec32)) } else { key_of64(&*(rec.add(i) as *const Rec64)) };
-                ptr::write(first.add(i), P::from_radix(radix));
-            }
-        }
-    } else if self_double {
-        let first = v.as_mut_ptr() as *mut f64;
-        for i in 0..n {
-            // SAFETY: as above, with K = f64 and R = Rec64.
-            unsafe { ptr::write(first.add(i), double_of(&*(rec.add(i) as *const Rec64))) };
+            // without a destructor); R is Rec32 by size.
+            unsafe { ptr::write(first.add(i), P::from_radix(key_of32(&*(rec.add(i) as *const Rec32)))) };
         }
     } else {
         permute::<T, *mut R, A>(v, rec, n, sparse);
@@ -645,10 +626,80 @@ fn sort_records_as<T, P: Proj<T>, A: Alloc, R: Record>(v: &mut [T], proj: &mut P
     Ok(true)
 }
 
+/// A slice whose elements are 64-bit keys that invert from their radix
+/// form (`i64`, `u64`, `f64`, a pointer): the keys themselves are sorted, 8
+/// bytes per element and no index, and written back from their radix
+/// form. The two zeros of an `f64` share a key and the sort keeps them in
+/// input order, so the negative ones are put back by their rank among the
+/// zeros.
+fn sort_keys_only<T, P: Proj<T>, A: Alloc>(v: &mut [T], proj: &mut P) -> Result<(), AllocError> {
+    let n = v.len();
+    let dbl = <P::K as Key>::PRESCAN == Prescan::F64;
+    let keys = Buf::<Key64, A>::new(n)?;
+    let k = keys.ptr();
+    let mut scratch = Scratch::<View<Key64, NoHooks, A>>::new(); // the sorted keys may end up in its buffer
+    let mut neg_zeros = 0usize;
+    for (i, t) in v.iter().enumerate() {
+        let key = proj.hold(t);
+        // SAFETY: i < n keys.
+        unsafe { ptr::write(k.add(i), Key64::from_radix(radix64_of(&*key))) };
+        if dbl {
+            // SAFETY: PRESCAN is F64 only for the key type f64, and IDENTITY makes T that type.
+            neg_zeros += (unsafe { *(t as *const T as *const f64) }.to_bits() == 0x8000_0000_0000_0000) as usize;
+        }
+    }
+    let mut ranks: Option<Buf<u32, A>> = None; // of the negative zeros among the zeros, in input order
+    if neg_zeros > 0 {
+        let r = ranks.insert(Buf::<u32, A>::new(neg_zeros)?).ptr();
+        let (mut z, mut j) = (0usize, 0usize);
+        for t in v.iter() {
+            // SAFETY: as above.
+            let d = unsafe { *(t as *const T as *const f64) };
+            if d == 0.0 {
+                if d.is_sign_negative() {
+                    // SAFETY: j < neg_zeros, the number of negative zeros counted above.
+                    unsafe { ptr::write(r.add(j), z as u32) };
+                    j += 1;
+                }
+                z += 1;
+            }
+        }
+    }
+    let in_src = brainsort_impl(View::<Key64, NoHooks, A>::new(k, n), &mut scratch, true, 0)?;
+    let k: *const Key64 = if in_src { k } else { scratch.buffer().expect("the result is in the scratch buffer") };
+    let first = v.as_mut_ptr() as *mut P::Owned;
+    for i in 0..n {
+        // SAFETY: IDENTITY means T is K is P::Owned, a plain fixed key without a destructor; i < n.
+        unsafe { ptr::write(first.add(i), P::from_radix((*k.add(i)).radix())) };
+    }
+    if let Some(ranks) = ranks {
+        // the zeros are the keys of signed value 0: the first is found by bisection
+        let (mut lo, mut hi) = (0usize, n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            // SAFETY: mid < n.
+            if unsafe { (*k.add(mid)).key } < 0 {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let first = v.as_mut_ptr() as *mut f64;
+        for j in 0..neg_zeros {
+            // SAFETY: rank j is below the number of zeros, which start at lo and end within n.
+            unsafe { ptr::write(first.add(lo + *ranks.ptr().add(j) as usize), -0.0) };
+        }
+    }
+    Ok(())
+}
+
 fn sort_records<T, P: Proj<T>, A: Alloc>(v: &mut [T], proj: &mut P, sparse: bool) -> Result<bool, AllocError> {
     let s = <P::K as Key>::SHAPE;
+    let keys_only = P::IDENTITY && (<P::K as Key>::EXACT_FIXED || <P::K as Key>::PRESCAN == Prescan::F64);
     if s.all_fixed() && s.total_bits() <= 32 {
         sort_records_as::<T, P, A, Rec32>(v, proj, sparse)
+    } else if s.all_fixed() && s.total_bits() <= 64 && keys_only {
+        sort_keys_only::<T, P, A>(v, proj).map(|()| true)
     } else if s.all_fixed() && s.total_bits() <= 64 {
         sort_records_as::<T, P, A, Rec64>(v, proj, sparse)
     } else if s.n == 1 && s.part(0).bytes && !s.part(0).desc {

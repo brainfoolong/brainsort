@@ -135,11 +135,7 @@ pub fn make<T: BenchKey>(ds: &str, n: usize, seed: u64) -> Vec<T> {
 /// call of a few nanoseconds.
 pub const REFERENCE_N: usize = 100_000;
 pub fn batch_for(n: usize) -> usize {
-    if n == 0 || n >= REFERENCE_N {
-        1
-    } else {
-        REFERENCE_N.div_ceil(n)
-    }
+    if n == 0 || n >= REFERENCE_N { 1 } else { REFERENCE_N.div_ceil(n) }
 }
 
 /// The median wall time of one sort in ms over `reps` repetitions; every

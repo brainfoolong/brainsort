@@ -102,6 +102,8 @@ pub enum SimdKind {
     I64,
     /// 16-byte elements with an IEEE double in bytes 0-7.
     F64,
+    /// 8-byte elements that are a signed 64-bit key.
+    K64,
 }
 
 /// An element the core algorithm sorts: a small plain value with an

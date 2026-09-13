@@ -3,7 +3,7 @@
 //! and the result must still be sorted, stable and leak nothing.
 #![cfg(feature = "__internals")]
 mod common;
-use brainsort::internals::{Alloc, AllocError, ByRef, sort_by_impl, sort_by_key_impl};
+use brainsort::internals::{Alloc, AllocError, ByRef, Identity, sort_by_impl, sort_by_key_impl};
 use common::*;
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -71,6 +71,50 @@ fn case<K: Gen + Clone + Natural + brainsort::Key + std::fmt::Debug>(name: &str,
         verify(&v, n, &format!("{name}/{pattern} allocation {k} of {total} failed"));
         assert_eq!(LIVE.with(|l| l.get()), 0, "{name}/{pattern} allocation {k} failed: scratch leaked");
     }
+}
+
+/// The keys-only route of a plain slice of 64-bit keys: the key array, the
+/// scratch, and for `f64` the ranks of the negative zeros; each failure
+/// falls back to the standard library's sort and the result is the same,
+/// bit for bit.
+fn plain_case<K: Clone + Natural + brainsort::Key + std::fmt::Debug>(name: &str, input: &[K]) {
+    let mut w = input.to_vec();
+    w.sort_by(|x, y| x.natural_cmp(y));
+    let check = |v: &[K], ctx: &str| {
+        for i in 0..v.len() {
+            assert!(v[i].identical(&w[i]), "{ctx}: differs at {i}: {:?} vs {:?}", v[i], w[i]);
+        }
+    };
+    reset(usize::MAX);
+    let mut v = input.to_vec();
+    sort_by_key_impl::<_, Identity, FailAlloc>(&mut v, Identity);
+    check(&v, &format!("{name} baseline"));
+    let total = COUNT.with(|c| c.get());
+    assert_eq!(LIVE.with(|l| l.get()), 0, "{name}: scratch leaked");
+    assert!(total > 0, "{name}: the baseline did not allocate");
+    for k in 0..=total {
+        reset(k);
+        let mut v = input.to_vec();
+        sort_by_key_impl::<_, Identity, FailAlloc>(&mut v, Identity);
+        check(&v, &format!("{name} allocation {k} of {total} failed"));
+        assert_eq!(LIVE.with(|l| l.get()), 0, "{name} allocation {k} failed: scratch leaked");
+    }
+}
+
+#[test]
+fn plain_key_allocation_points() {
+    let n = if cfg!(miri) { 500 } else { 5000 };
+    let mut rng = Rng::new(11);
+    let f: Vec<f64> = (0..n)
+        .map(|i| match i % 5 {
+            0 => -0.0,
+            1 => 0.0,
+            _ => (rng.next() % 1000) as f64 - 500.0,
+        })
+        .collect();
+    plain_case("f64 with zeros", &f);
+    let u: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+    plain_case("u64 random", &u);
 }
 
 /// The comparator sort of elements over 16 bytes: the index array, then

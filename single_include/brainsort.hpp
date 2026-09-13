@@ -334,7 +334,8 @@ inline const CacheSizes& cache_sizes() noexcept {
 //
 // SimdKind::i32 promises sizeof(T) == 8 with a signed 32-bit key whose signed
 // order equals the element order in bytes 0-3; i64 promises sizeof(T) == 16
-// and a signed 64-bit key in bytes 0-7; f64 the same with an IEEE double.
+// and a signed 64-bit key in bytes 0-7; f64 the same with an IEEE double;
+// k64 promises sizeof(T) == 8 and that the element is the signed 64-bit key.
 
 
 #include <cassert>
@@ -346,7 +347,7 @@ inline const CacheSizes& cache_sizes() noexcept {
 
 namespace brainsort {
 
-enum class SimdKind { none, i32, i64, f64 };
+enum class SimdKind { none, i32, i64, f64, k64 };
 
 template <class T> struct elem_traits;
 
@@ -1404,10 +1405,43 @@ BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2_64(const T* p, size_t n) {
     finish_runs(r, n);
     return r;
 }
+BRAINSORT_TARGET_AVX2 inline unsigned mask_pd(__m256i x) { return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(x))); }
+// Vectorised scout for 8-byte elements that are the key (Key64), 8 elements
+// per block: two vectors of four, each compared with the vector one element
+// behind it; bit e of the block mask belongs to element e.
+template <class T>
+BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2_k64(const T* p, size_t n) {
+    static_assert(sizeof(T) == 8, "SimdKind::k64 promises 8-byte elements");
+    static constexpr uint8_t bit_of[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    ScoutResult r;
+    const __m256i vk0   = _mm256_set1_epi64x(skey64(p[0]));
+    __m256i       vmask = _mm256_setzero_si256();
+    size_t i = 1, next_check = kCommitBlock;
+    for (; i + 8 <= n; i += 8) {
+        const __m256i c0 = ld256(p + i), c1 = ld256(p + i + 4);
+        const __m256i q0 = ld256(p + i - 1), q1 = ld256(p + i + 3);
+        vmask = _mm256_or_si256(vmask, _mm256_or_si256(_mm256_xor_si256(c0, vk0), _mm256_xor_si256(c1, vk0)));
+        const unsigned d = mask_pd(_mm256_cmpgt_epi64(q0, c0)) | (mask_pd(_mm256_cmpgt_epi64(q1, c1)) << 4);
+        const unsigned u = mask_pd(_mm256_cmpgt_epi64(c0, q0)) | (mask_pd(_mm256_cmpgt_epi64(c1, q1)) << 4);
+        scout_block<8>(r, d, u, i, bit_of);
+        if (i >= next_check) {
+            next_check += kCommitBlock;
+            if (commit_now(r, i + 8)) { r.committed = true; break; }
+        }
+    }
+    alignas(32) uint64_t lanes[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), vmask);
+    r.mask = lanes[0] | lanes[1] | lanes[2] | lanes[3];
+    if (r.committed) return r;
+    scout_tail(r, p, i, n);
+    finish_runs(r, n);
+    return r;
+}
 template <class T>
 BRAINSORT_TARGET_AVX2 inline ScoutResult scout_avx2(const T* p, size_t n) {
     constexpr SimdKind kind = elem_traits<T>::simd;
     if constexpr (kind == SimdKind::i32) return scout_avx2_32(p, n);
+    else if constexpr (kind == SimdKind::k64) return scout_avx2_k64(p, n);
     else if constexpr (kind == SimdKind::f64) return scout_avx2_64<T, true>(p, n);
     else return scout_avx2_64<T, false>(p, n);
 }
@@ -2089,6 +2123,10 @@ BRAINSORT_TARGET_AVX2 inline unsigned lt_mask(__m256i v, __m256i vpivot, __m256i
         const __m256i lt = _mm256_cmpgt_epi64(vpivot, v);                            // key lanes 0,2
         const unsigned m = static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(lt)));
         return (m & 1) | ((m >> 1) & 2);
+    } else if constexpr (kind == SimdKind::k64) {
+        vmask = _mm256_or_si256(vmask, _mm256_xor_si256(v, vk0));
+        const __m256i lt = _mm256_cmpgt_epi64(vpivot, v);                            // every lane is a key
+        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(lt)));   // one bit per element
     } else {
         // Compare on the total-order keys (signed compare of sign-flipped keys ==
         // unsigned compare), so the vector loop agrees with the scalar tail and
@@ -2113,7 +2151,7 @@ template <class T> BRAINSORT_TARGET_AVX2 inline __m256i pivot_vec(T pivot) { ret
 template <class T> BRAINSORT_TARGET_AVX2 inline __m256i key0_vec(T e) {
     constexpr SimdKind kind = elem_traits<T>::simd;
     if constexpr (kind == SimdKind::i32) return _mm256_set1_epi32(skey32(e));
-    else if constexpr (kind == SimdKind::i64) return _mm256_set1_epi64x(skey64(e));
+    else if constexpr (kind == SimdKind::i64 || kind == SimdKind::k64) return _mm256_set1_epi64x(skey64(e));
     else return _mm256_set1_epi64x(static_cast<long long>(elem_traits<T>::radix_key(e, 0)));
 }
 template <class T> BRAINSORT_TARGET_AVX2 inline uint64_t fold_mask(__m256i vmask) {
@@ -2121,6 +2159,8 @@ template <class T> BRAINSORT_TARGET_AVX2 inline uint64_t fold_mask(__m256i vmask
     _mm256_store_si256(reinterpret_cast<__m256i*>(l), vmask);
     if constexpr (elem_traits<T>::simd == SimdKind::i32) {   // int32 keys in the low half of every 64-bit lane
         return static_cast<uint32_t>(l[0] | l[1] | l[2] | l[3]);
+    } else if constexpr (elem_traits<T>::simd == SimdKind::k64) {   // every lane a key
+        return l[0] | l[1] | l[2] | l[3];
     } else {                                                  // 64-bit keys in lanes 0 and 2
         return l[0] | l[2];
     }
@@ -3052,7 +3092,7 @@ template <class A, class K>
 inline bool split2(A a, A buf, size_t n, size_t cap, int chunk, const K* vk, K t1, K t2, K t3,
                    uint64_t& xm, size_t& c0_lt, size_t& c0_ge, size_t& n_ge, bool& known) {
 #ifdef BRAINSORT_X86_64
-    if constexpr (!A::counted && A::traits::simd == SimdKind::i32) {
+    if constexpr (!A::counted && (A::traits::simd == SimdKind::i32 || A::traits::simd == SimdKind::k64)) {
         if (chunk == 0 && have_avx2()) return split2_avx2(a, buf, n, cap, vk, t1, t2, t3, xm, c0_lt, c0_ge, n_ge, known);
     }
 #endif
@@ -3061,7 +3101,7 @@ inline bool split2(A a, A buf, size_t n, size_t cap, int chunk, const K* vk, K t
 template <class A, class K>
 inline void partition2(A src, size_t m, A dst, size_t o0, size_t o1, size_t end1, int chunk, K t) {
 #ifdef BRAINSORT_X86_64
-    if constexpr (!A::counted && A::traits::simd == SimdKind::i32) {
+    if constexpr (!A::counted && (A::traits::simd == SimdKind::i32 || A::traits::simd == SimdKind::k64)) {
         if (chunk == 0 && have_avx2()) { partition2_avx2(src.data(), m, dst.data(), o0, o1, end1, t); return; }
     }
 #endif
@@ -4190,6 +4230,8 @@ inline int compare_keys(const K& a, const K& b) {
 //   CompRec   anything else: a sequence of fixed and byte-string parts
 // Several fixed keys are packed into one radix value (a pair<int, int> is
 // one 64-bit key), so composite keys of integers stay on the fast paths.
+// A plain range of 64-bit keys (int64, uint64, double, a pointer) needs no
+// index: the keys themselves are sorted as Key64 and written back.
 
 
 #include <cmath>
@@ -4214,7 +4256,12 @@ struct Rec64 {
     uint32_t idx;
     uint32_t pad;
 };
-static_assert(sizeof(Rec32) == 8 && sizeof(Rec64) == 16);
+// The key alone, for a range whose elements are 64-bit keys that invert
+// from their radix form: half the bytes of a Rec64, four per vector.
+struct Key64 {
+    int64_t key;
+};
+static_assert(sizeof(Rec32) == 8 && sizeof(Rec64) == 16 && sizeof(Key64) == 8);
 
 // ---- string record ----------------------------------------------------------------
 template <bool Desc>
@@ -4261,6 +4308,17 @@ template <> struct elem_traits<detail::Rec64> {
     using T = detail::Rec64;
     static constexpr bool     chunked = false;
     static constexpr SimdKind simd    = SimdKind::i64;
+    using key_type = uint64_t;
+    static bool     less(T a, T b) { return a.key < b.key; }
+    static int      compare(T a, T b) { return a.key < b.key ? -1 : (b.key < a.key ? 1 : 0); }
+    static int      compare_from(T a, T b, int) { return compare(a, b); }
+    static key_type radix_key(T a, int) { return static_cast<uint64_t>(a.key) ^ 0x8000000000000000ull; }
+    static bool     chunk_ends(T, int) { return true; }
+};
+template <> struct elem_traits<detail::Key64> {
+    using T = detail::Key64;
+    static constexpr bool     chunked = false;
+    static constexpr SimdKind simd    = SimdKind::k64;
     using key_type = uint64_t;
     static bool     less(T a, T b) { return a.key < b.key; }
     static int      compare(T a, T b) { return a.key < b.key ? -1 : (b.key < a.key ? 1 : 0); }
@@ -4488,17 +4546,25 @@ template <class K> inline K key_of(const Rec64& r) noexcept {
     return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint64_t>(r.key) ^ 0x8000000000000000ull));
 }
 
-// A double is written back from its record as well: the radix transform is
-// a bijection on every bit pattern except that -0.0 and +0.0 share a key,
-// so the record's spare word remembers a negative zero.
-inline void note_negative_zero(Rec64& r, double d) noexcept {
-    r.pad = d == 0.0 && std::signbit(d) ? 1u : 0u;
+// The keys-only element of a 64-bit key, and the key it stands for.
+template <class K> inline Key64 key64_of(const K& k) noexcept {
+    return Key64{static_cast<int64_t>(static_cast<uint64_t>(key_traits<K>::to_radix(k)) ^ 0x8000000000000000ull)};
 }
-inline double double_of(const Rec64& r) noexcept {
+template <class K> inline K key_of(const Key64& r) noexcept {
+    return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint64_t>(r.key) ^ 0x8000000000000000ull));
+}
+// A double is written back from its key as well: the radix transform is a
+// bijection on every bit pattern except that -0.0 and +0.0 share the key
+// whose signed form is 0, so a negative zero is noted separately.
+inline bool is_negative_zero(double d) noexcept {
+    uint64_t bits;
+    std::memcpy(&bits, &d, sizeof bits);
+    return bits == 0x8000000000000000ull;
+}
+inline double double_of(const Key64& r) noexcept {
     const uint64_t sign = 0x8000000000000000ull;
     const uint64_t u    = static_cast<uint64_t>(r.key) ^ sign;
-    uint64_t bits       = u & sign ? (u & ~sign) : (sign | (sign - u));
-    if (r.pad) bits = sign;   // -0.0
+    const uint64_t bits = u & sign ? (u & ~sign) : (sign | (sign - u));
     double d;
     std::memcpy(&d, &bits, sizeof d);
     return d;
@@ -4514,6 +4580,7 @@ inline double double_of(const Rec64& r) noexcept {
 #include <functional>
 #include <iterator>
 #include <new>
+#include <optional>
 #include <ranges>
 #include <type_traits>
 #include <utility>
@@ -4972,6 +5039,55 @@ inline void small_sort(It first, size_t n, Less& less) {
     }
 }
 
+// A range whose elements are 64-bit keys that invert from their radix form
+// (int64, uint64, double, a pointer): the keys themselves are sorted, 8
+// bytes per element and no index, and written back from their radix form.
+// The two zeros of a double share a key and the sort keeps them in input
+// order, so the negative ones are put back by their rank among the zeros.
+template <class Alloc, class It, class K>
+inline void sort_keys_only(It first, size_t n) {
+    constexpr bool dbl = std::is_same_v<K, double>;
+    Buf<Key64, Alloc> keys(n);
+    Key64* k = keys.data();
+    brain_detail::Scratch<View<Key64, Alloc>> scratch;   // the sorted keys may end up in its buffer
+    size_t neg_zeros = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const K& v = first[static_cast<std::ptrdiff_t>(i)];
+        k[i] = key64_of<K>(v);
+        if constexpr (dbl) neg_zeros += is_negative_zero(v);
+    }
+    std::optional<Buf<uint32_t, Alloc>> ranks;   // of the negative zeros among the zeros, in input order
+    if constexpr (dbl) {
+        if (neg_zeros) {
+            uint32_t* r = ranks.emplace(neg_zeros).data();
+            size_t    z = 0, j = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const double d = first[static_cast<std::ptrdiff_t>(i)];
+                if (d == 0.0) {
+                    if (is_negative_zero(d)) r[j++] = static_cast<uint32_t>(z);
+                    ++z;
+                }
+            }
+        }
+    }
+    if (!brainsort_impl<0>(View<Key64, Alloc>(k, n), scratch, true)) k = scratch.buffer();
+    if constexpr (dbl) {
+        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = double_of(k[i]);
+        if (neg_zeros) {
+            // the zeros are the keys of signed value 0: the first is found by bisection
+            size_t lo = 0, hi = n;
+            while (lo < hi) {
+                const size_t mid = lo + (hi - lo) / 2;
+                if (k[mid].key < 0) lo = mid + 1; else hi = mid;
+            }
+            const uint32_t* r = ranks->data();
+            for (size_t j = 0; j < neg_zeros; ++j) first[static_cast<std::ptrdiff_t>(lo + r[j])] = -0.0;
+        }
+    } else {
+        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = key_of<K>(k[i]);
+    }
+}
+
 // Sort [first, last) by proj(element), through records of type Rec. Returns
 // false, with the range untouched, if the keys could not be represented.
 template <class Alloc, class It, class Proj>
@@ -4981,7 +5097,11 @@ inline bool sort_records(It first, size_t n, Proj& proj, bool sparse) {
     using K   = key_of_t<It, Proj>;
     using Rec = record_t<K>;
     constexpr bool materialise = !std::is_reference_v<R> && kParts<K>.owning;   // keys are temporaries that own their bytes
-    constexpr bool self_double = std::is_same_v<Proj, std::identity> && std::is_same_v<K, double> && std::is_same_v<T, double>;
+    constexpr bool self_keyed  = std::is_same_v<Proj, std::identity> && std::is_same_v<K, T>;
+    if constexpr (self_keyed && std::is_same_v<Rec, Rec64> && (exact_single_v<K> || std::is_same_v<K, double>)) {
+        sort_keys_only<Alloc, It, K>(first, n);
+        return true;
+    }
 
     Buf<Rec, Alloc> recs(n);
     Rec* rec = recs.data();
@@ -4996,16 +5116,12 @@ inline bool sort_records(It first, size_t n, Proj& proj, bool sparse) {
         for (size_t i = 0; i < n; ++i) {
             decltype(auto) k = std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]);
             if (!build_record<K>(rec[i], k, static_cast<uint32_t>(i))) return false;
-            if constexpr (self_double) note_negative_zero(rec[i], k);
         }
         if (!brainsort_impl<0>(View<Rec, Alloc>(rec, n), scratch, true)) rec = scratch.buffer();
     }
     // The elements are the keys and the key inverts: write the sorted keys back.
-    if constexpr (std::is_same_v<Proj, std::identity> && exact_single_v<K> && std::is_same_v<K, T> &&
-                  (std::is_same_v<Rec, Rec32> || std::is_same_v<Rec, Rec64>)) {
+    if constexpr (self_keyed && exact_single_v<K> && std::is_same_v<Rec, Rec32>) {
         for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = key_of<K>(rec[i]);
-    } else if constexpr (self_double) {
-        for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = double_of(rec[i]);
     } else {
         permute<Alloc>(first, rec, n, sparse);
     }

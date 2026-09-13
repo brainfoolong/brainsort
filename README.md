@@ -228,7 +228,10 @@ records, one per element, holding the radix form of the key and the original
 index; sorts the records; then permutes your elements once. Keys of up to 32
 bits become 8-byte records, up to 64 bits 16-byte records, a string a 16-byte
 pointer-and-length record, anything else a composite record sorted chunk by
-chunk. Plain integers and doubles are written back directly; nearly sorted
+chunk. A plain array of 64-bit numbers or pointers needs no index: the keys
+themselves are sorted, 8 bytes per element, and written back (the two zeros
+of a double share a key and are put back by their rank among the zeros);
+plain 32-bit numbers are written back from their records. Nearly sorted
 large elements are permuted by following cycles, which moves only the
 elements that are out of place.
 
@@ -260,8 +263,9 @@ A comparator that is not expressible as a key goes to `std::stable_sort`.
 
 ### Memory, failure, limits
 
-- **Memory.** n records of 8, 16 or more bytes, plus the algorithm's scratch
-  of about n/2 records on full-entropy input, plus count tables of at most
+- **Memory.** n records of 8, 16 or more bytes (8 for a plain array of
+  64-bit numbers, which needs no index), plus the algorithm's scratch of
+  about n/2 records on full-entropy input, plus count tables of at most
   64 KiB (about 400 KiB for a part that is scattered beyond the cache).
   Trivially copyable elements are permuted through a buffer of n elements,
   other elements in place with moves; a comparator sort uses a buffer of n

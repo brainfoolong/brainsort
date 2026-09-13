@@ -11,7 +11,9 @@
 //! - [`CompRec`]: anything else: a sequence of fixed and byte-string parts
 //!
 //! Several fixed keys are packed into one radix value (a `(i32, i32)` is one
-//! 64-bit key), so composite keys of integers stay on the fast paths.
+//! 64-bit key), so composite keys of integers stay on the fast paths. A
+//! plain slice of 64-bit keys (`i64`, `u64`, `f64`, a pointer) needs no
+//! index: the keys themselves are sorted as [`Key64`] and written back.
 use crate::key::{Key, Leaf, PartSink, SlotTree};
 use crate::view::{Elem, STR_CHUNK_BYTES, SimdKind, str_chunk_bytes, str_chunk_ends, str_chunk_key, str_chunk_key_desc, str_compare_from, str_examined};
 
@@ -47,8 +49,28 @@ pub struct Rec64 {
     pub key: i64,
     /// The original index.
     pub idx: u32,
-    /// Spare (remembers a negative zero for `f64` write-back).
+    /// Spare.
     pub pad: u32,
+}
+/// The key alone, for a slice whose elements are 64-bit keys that invert
+/// from their radix form: half the bytes of a [`Rec64`], four per vector.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Key64 {
+    /// The signed form of the radix key.
+    pub key: i64,
+}
+impl Key64 {
+    /// The element of a radix key.
+    #[inline(always)]
+    pub fn from_radix(r: u64) -> Self {
+        Key64 { key: (r ^ 0x8000_0000_0000_0000) as i64 }
+    }
+    /// The radix key.
+    #[inline(always)]
+    pub fn radix(self) -> u64 {
+        (self.key as u64) ^ 0x8000_0000_0000_0000
+    }
 }
 impl Elem for Rec32 {
     type Key = u32;
@@ -69,6 +91,31 @@ impl Elem for Rec32 {
     #[inline(always)]
     fn radix_key(a: Self, _chunk: i32) -> u32 {
         (a.key as u32) ^ 0x8000_0000
+    }
+    #[inline(always)]
+    fn chunk_ends(_a: Self, _chunk: i32) -> bool {
+        true
+    }
+}
+impl Elem for Key64 {
+    type Key = u64;
+    const CHUNKED: bool = false;
+    const SIMD: SimdKind = SimdKind::K64;
+    #[inline(always)]
+    fn less(a: Self, b: Self) -> bool {
+        a.key < b.key
+    }
+    #[inline(always)]
+    fn compare(a: Self, b: Self) -> i32 {
+        (a.key > b.key) as i32 - (a.key < b.key) as i32
+    }
+    #[inline(always)]
+    fn compare_from(a: Self, b: Self, _chunk: i32) -> i32 {
+        Self::compare(a, b)
+    }
+    #[inline(always)]
+    fn radix_key(a: Self, _chunk: i32) -> u64 {
+        a.radix()
     }
     #[inline(always)]
     fn chunk_ends(_a: Self, _chunk: i32) -> bool {
@@ -168,28 +215,12 @@ impl Record for Rec64 {
 pub fn key_of32(r: &Rec32) -> u64 {
     ((r.key as u32) ^ 0x8000_0000) as u64
 }
-/// The radix key of a sorted 64-bit record.
+/// The 64-bit radix value of a fixed key of up to 64 bits.
 #[inline(always)]
-pub fn key_of64(r: &Rec64) -> u64 {
-    (r.key as u64) ^ 0x8000_0000_0000_0000
-}
-/// A double is written back from its record as well: the radix transform
-/// is a bijection on every bit pattern except that -0.0 and +0.0 share a
-/// key, so the record's spare word remembers a negative zero.
-#[inline(always)]
-pub fn note_negative_zero(r: &mut Rec64, d: f64) {
-    r.pad = (d == 0.0 && d.is_sign_negative()) as u32;
-}
-/// The double of a sorted record.
-#[inline(always)]
-pub fn double_of(r: &Rec64) -> f64 {
-    let sign = 0x8000_0000_0000_0000u64;
-    let u = (r.key as u64) ^ sign;
-    let mut bits = if u & sign != 0 { u & !sign } else { sign | (sign - u) };
-    if r.pad != 0 {
-        bits = sign; // -0.0
-    }
-    f64::from_bits(bits)
+pub fn radix64_of<K: Key + ?Sized>(key: &K) -> u64 {
+    let mut b = Build64 { acc: 0 };
+    key.write_parts(&mut b);
+    b.acc
 }
 
 // ---- string record ----------------------------------------------------------------
@@ -485,4 +516,4 @@ unsafe impl<const D: bool> Send for StrRec<D> {}
 // SAFETY: as above.
 unsafe impl<const D: bool> Sync for StrRec<D> {}
 
-const _: () = assert!(core::mem::size_of::<Rec32>() == 8 && core::mem::size_of::<Rec64>() == 16);
+const _: () = assert!(core::mem::size_of::<Rec32>() == 8 && core::mem::size_of::<Rec64>() == 16 && core::mem::size_of::<Key64>() == 8);

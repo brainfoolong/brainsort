@@ -100,13 +100,14 @@ Implementing `Key` by hand (a `Shape`, a `Slots` type, `write_parts` and
 Anything. The keys are sorted first, in an array of small records, then
 the elements are permuted once with bitwise moves; no element is cloned or
 dropped on the way. Plain slices of integers and `f64` are written back
-directly.
+directly; 64-bit ones are sorted as bare keys, without an index.
 
 ## What to know
 
 - **Memory.** About 1.5 small records per element while sorting (8 bytes
-  for keys up to 32 bits, 16 bytes up to 64 bits or a string, more for
-  composites), plus one element per element for the permutation; a
+  for keys up to 32 bits and for a plain slice of 64-bit numbers, 16 bytes
+  for other keys up to 64 bits or a string, more for composites), plus one
+  element per element for the permutation; a
   comparator on elements over 16 bytes uses 4 bytes per element for the
   indices instead of the records. Sorted and reversed input, and nearly
   sorted elements of up to 16 bytes (64 with a comparator), need no
