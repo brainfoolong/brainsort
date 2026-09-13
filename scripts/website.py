@@ -784,6 +784,7 @@ brainsort::sort_by(&amp;mut rows, |a, b| a.name.cmp(&amp;b.name));       // a co
 <span class="eyebrow">Overview</span>
 <h2>At a glance</h2>
 <p class="intro" id="glance-text"></p>
+<p class="note"><b>Why these sorts.</b> An opponent has to offer what brainsort offers, so that a win or a loss means something: it is stable, it sorts every key type on this page and it takes an arbitrary comparator. And it is the upstream code as it ships, never a port written here. <!--cpp-->That is std::stable_sort, cpp-TimSort and Boost.Sort's spinsort and flat_stable_sort; std::sort, pdqsort and the radix libraries are unstable or sort scalar keys only, an easier job, and are not opponents.<!--/cpp--><!--rust-->That is slice::sort, its cached-key form and glidesort; slice::sort_unstable and the radix crates are unstable or sort scalar keys only, an easier job, and are not opponents.<!--/rust--></p>
 <div class="tiles" id="glance-tiles"></div>
 <p class="note" id="glance-note"></p>
 </section>

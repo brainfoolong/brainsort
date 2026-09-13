@@ -83,16 +83,20 @@ test suite recomputes that file as well.
 
 ## Results in short
 
-Measured against the sorts that can do what brainsort does, as they ship:
-stable, every key type, an arbitrary comparator, upstream code and nothing
-written here ([docs/decisions/0017.md](docs/decisions/0017.md)). In C++
-that is the standard library's `std::stable_sort` (libstdc++, libc++ and
-the MSVC STL, one per toolchain), the gfx C++ port of TimSort, and
-Boost.Sort's `spinsort` and `flat_stable_sort`; on four key types (int32,
-double, int64, string) and twelve input patterns, at 10 to 1,000,000
-elements (ten million as an option). Unstable sorts (`std::sort`, pdqsort,
-ipnsort) and radix sorts for scalar keys only have an easier job and are
-not opponents.
+**Why these sorts.** An opponent has to offer what brainsort offers, so
+that a win or a loss means something: it is stable, it sorts every key
+type here (integers, doubles, strings) and it takes an arbitrary
+comparator. And it is the upstream code as it ships, never a port written
+here, which could be slower than the original. Unstable sorts
+(`std::sort`, pdqsort, ipnsort) and radix sorts for scalar keys only have
+an easier job and are not opponents
+([docs/decisions/0017.md](docs/decisions/0017.md)).
+
+In C++ the opponents are the standard library's `std::stable_sort`
+(libstdc++, libc++ and the MSVC STL, one per toolchain), the gfx C++ port
+of TimSort, and Boost.Sort's `spinsort` and `flat_stable_sort`; measured
+on four key types (int32, double, int64, string) and twelve input
+patterns, at 10 to 1,000,000 elements (ten million as an option).
 
 The table below is deterministic: it counts what each algorithm does, not how
 long it takes, so it is the same on every machine. It is derived from
