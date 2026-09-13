@@ -140,5 +140,54 @@ inline bool have_bmi2() noexcept {
     return v;
 }
 
+// ---- cache sizes ---------------------------------------------------------------
+// The data cache sizes of the core the sort runs on, read once from the CPU
+// (cpuid leaf 4 on Intel, leaf 0x8000001D on AMD). They decide when a part
+// is too large for its radix passes to run in cache and how large the
+// buckets of the MSD scatter should be. Where nothing can be read (another
+// architecture, a virtual machine that reports no caches) the fallbacks are
+// those of a common desktop core.
+struct CacheSizes {
+    size_t l1d = size_t(32) << 10;
+    size_t l2  = size_t(1) << 20;
+    size_t l3  = size_t(32) << 20;
+};
+
+inline CacheSizes detect_caches() noexcept {
+    CacheSizes c;
+#ifdef BRAINSORT_X86_64
+    unsigned a, b, cc, d;
+    cpuid(0, 0, a, b, cc, d);
+    const unsigned max_leaf = a;
+    cpuid(0x80000000u, 0, a, b, cc, d);
+    bool ext = false;   // AMD: the cache leaf lives in the extended range
+    if (a >= 0x8000001Du) {
+        cpuid(0x80000001u, 0, a, b, cc, d);
+        ext = (cc >> 22) & 1;   // topology extensions
+    }
+    if (!ext && max_leaf < 4) return c;
+    size_t l1d = 0, l2 = 0, l3 = 0;
+    for (unsigned i = 0; i < 16; ++i) {
+        cpuid(ext ? 0x8000001Du : 4u, i, a, b, cc, d);
+        const unsigned type = a & 0x1F;   // 1 data, 2 instruction, 3 unified
+        if (type == 0) break;
+        const unsigned level = (a >> 5) & 7;
+        const size_t   size  = (((b >> 22) & 0x3FF) + 1) * (((b >> 12) & 0x3FF) + 1) * ((b & 0xFFF) + 1) * (static_cast<size_t>(cc) + 1);
+        if (type == 2) continue;
+        if (level == 1) l1d = size;
+        else if (level == 2) l2 = size;
+        else if (level == 3) l3 = size;
+    }
+    if (l1d) c.l1d = l1d;
+    if (l2) c.l2 = l2;
+    if (l3) c.l3 = l3;
+#endif
+    return c;
+}
+inline const CacheSizes& cache_sizes() noexcept {
+    static const CacheSizes c = detect_caches();
+    return c;
+}
+
 }  // namespace detail
 }  // namespace brainsort

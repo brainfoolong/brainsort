@@ -19,6 +19,7 @@
 #include "brainsort/detail/keys.hpp"
 #include "brainsort/detail/traits.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
@@ -312,6 +313,22 @@ template <class K> inline K key_of(const Rec32& r) noexcept {
 }
 template <class K> inline K key_of(const Rec64& r) noexcept {
     return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint64_t>(r.key) ^ 0x8000000000000000ull));
+}
+
+// A double is written back from its record as well: the radix transform is
+// a bijection on every bit pattern except that -0.0 and +0.0 share a key,
+// so the record's spare word remembers a negative zero.
+inline void note_negative_zero(Rec64& r, double d) noexcept {
+    r.pad = d == 0.0 && std::signbit(d) ? 1u : 0u;
+}
+inline double double_of(const Rec64& r) noexcept {
+    const uint64_t sign = 0x8000000000000000ull;
+    const uint64_t u    = static_cast<uint64_t>(r.key) ^ sign;
+    uint64_t bits       = u & sign ? (u & ~sign) : (sign | (sign - u));
+    if (r.pad) bits = sign;   // -0.0
+    double d;
+    std::memcpy(&d, &bits, sizeof d);
+    return d;
 }
 
 }  // namespace detail

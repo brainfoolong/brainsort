@@ -1215,17 +1215,248 @@ struct HistStore {
     size_t    n = 0;
 };
 
+// ---- MSD levels --------------------------------------------------------------
+// A part too large for the cache is scattered once by its top key bits into
+// buckets of about the size of the first-level cache, through
+// write-combining buffers: one cache line per bucket, written to the array
+// whole and aligned with non-temporal stores, so the thousands of write
+// streams of a wide digit cost one line write each instead of a
+// read-for-ownership and a partial write per element. Each bucket is then
+// sorted on the remaining bits while it sits in cache, by the fused LSD
+// passes (or by one more such level if it is still too large). The pass
+// count is that of the plain LSD radix; what changes is that all but the
+// first pass run in cache. (A single wide pass out of cache was measured
+// through the buffers as well and lost: the non-temporal stores leave the
+// result in memory, and the copy back that a one-pass sort needs then reads
+// it from there.)
+//
+// The sizes come from the CPU (detail/config.hpp): a part takes the MSD
+// scatter from a third of the last-level cache on, where its radix passes,
+// which read one buffer and write the other, stop fitting; below that they
+// run in cache and the extra histogram per bucket would cost more than the
+// scatter saves. The buckets aim at the first-level data cache; measured
+// against half and twice that size, both lost.
+constexpr size_t kWcLine     = 64;                // bytes per bucket buffer: one cache line
+constexpr int    kMaxLevels  = 10;                // 64-bit keys in 8-bit digits, plus one
+constexpr int    kMsdMaxBits = kSplitMaxDigit;    // widest top digit that is scattered this way
+
+inline size_t msd_min_bytes() noexcept {
+    const size_t third = cache_sizes().l3 / 3;
+    return third < (size_t(4) << 20) ? (size_t(4) << 20) : third;
+}
+inline size_t bucket_bytes() noexcept {
+    return std::clamp(cache_sizes().l1d, size_t(16) << 10, size_t(64) << 10);
+}
+
+// The top digit for a level of `bytes` bytes whose keys vary in `bits` bits.
+inline int msd_width(size_t bytes, int bits) {
+    int w = std::clamp(static_cast<int>(floor_log2(bytes / bucket_bytes())), 8, kMsdMaxBits);
+    return w < bits ? w : bits;
+}
+
+// Element types the write-combining buffers can hold: a whole number per line.
+template <class T> constexpr bool wc_ok_v = kWcLine % sizeof(T) == 0 && sizeof(T) <= kWcLine / 2;
+
+// The count tables of the levels: one per level (the bucket ends are read
+// while the buckets are sorted), two for a bucket's LSD passes.
+struct LevelTables {
+    uint32_t* base  = nullptr;
+    size_t    width = 0;   // entries per table
+    uint32_t* at(int level) const { return base + static_cast<size_t>(level) * width; }
+    static size_t need(size_t width) { return static_cast<size_t>(kMaxLevels + 2) * width; }
+};
+
+// Write-combined scatter of s[0,n) into d by digit (key(e) >> shift) & dmask.
+// pos[b] is the start of bucket b on entry and its end on return. A bucket's
+// first flush is cut at the next line boundary, so every later flush writes
+// one whole, aligned line.
+template <class T, class KeyFn>
+BRAINSORT_ALWAYS_INLINE void wc_scatter(const T* s, T* d, size_t n, KeyFn key, int shift, uint32_t dmask, uint32_t* pos,
+                                        size_t B, unsigned char* wc, uint8_t* fill, uint8_t* cap) {
+    constexpr size_t L = kWcLine / sizeof(T);
+    for (size_t b = 0; b < B; ++b) {
+        fill[b] = 0;
+        const size_t off  = reinterpret_cast<uintptr_t>(d + pos[b]) & (kWcLine - 1);
+        const size_t head = ((kWcLine - off) & (kWcLine - 1)) / sizeof(T);
+        cap[b] = static_cast<uint8_t>(head == 0 ? L : head);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const T        e    = s[i];
+        const uint32_t b    = static_cast<uint32_t>(key(e) >> shift) & dmask;
+        T*             line = reinterpret_cast<T*>(wc + static_cast<size_t>(b) * kWcLine);
+        unsigned       f    = fill[b];
+        line[f] = e;
+        if (++f == cap[b]) {
+            T* out = d + pos[b];
+#ifdef BRAINSORT_X86_64
+            if (f == L) {
+                for (size_t k = 0; k < kWcLine / 16; ++k)
+                    _mm_stream_si128(reinterpret_cast<__m128i*>(out) + k, _mm_load_si128(reinterpret_cast<const __m128i*>(line) + k));
+            }
+#else
+            if (f == L) std::memcpy(out, line, kWcLine);
+#endif
+            else std::memcpy(out, line, f * sizeof(T));
+            pos[b] += f;
+            cap[b] = static_cast<uint8_t>(L);
+            f = 0;
+        }
+        fill[b] = static_cast<uint8_t>(f);
+    }
+    for (size_t b = 0; b < B; ++b)
+        if (fill[b]) { std::memcpy(d + pos[b], wc + static_cast<size_t>(b) * kWcLine, fill[b] * sizeof(T)); pos[b] += fill[b]; }
+#ifdef BRAINSORT_X86_64
+    _mm_sfence();
+#endif
+}
+
+// Scatter s[0,m) into d by one digit, with pos[] the bucket starts (ends on
+// return): write-combined when the level is out of cache, plain otherwise.
+template <class A, class KeyFn, class S>
+BRAINSORT_ALWAYS_INLINE void msd_scatter(A s, A d, size_t m, KeyFn key, int shift, uint32_t dmask, uint32_t* pos, size_t B, S& scratch) {
+    using T = typename A::value_type;
+    if constexpr (A::counted) ++A::hooks::stats().radix_passes;
+    if constexpr (!A::counted && wc_ok_v<T>) {
+        if (m * sizeof(T) >= msd_min_bytes()) {
+            unsigned char* raw = scratch.wc(B * kWcLine + kWcLine + 2 * B);
+            unsigned char* buf = raw + ((kWcLine - (reinterpret_cast<uintptr_t>(raw) & (kWcLine - 1))) & (kWcLine - 1));
+            uint8_t* fill = buf + B * kWcLine;
+            uint8_t* cap  = fill + B;
+            wc_scatter(s.data(), d.data(), m, key, shift, dmask, pos, B, buf, fill, cap);
+            return;
+        }
+    }
+    for (size_t i = 0; i < m; ++i) {
+        const T        e = s.get(i);
+        const uint32_t b = static_cast<uint32_t>(key(e) >> shift) & dmask;
+        if constexpr (A::counted) A::hooks::on_table_rw(pos + b, sizeof(uint32_t));
+        d.set(pos[b]++, e);
+    }
+}
+
+// The levels below the top one. Level::run sorts one bucket, s[0,m), whose
+// elements agree on every key bit from `bits` up, with d[0,m) as the other
+// buffer and the result in s or d as asked. Two copies of the function
+// exist, one compiled for BMI2 so that a PEXT key functor is inlined into
+// it; the body is shared and always inlined into both.
+// `mask` is the parent's varying-bit mask below `bits`: exact for the part
+// as a whole, a superset for this bucket. The bucket's histogram pass
+// refines it, so digits that are constant within the bucket are skipped.
+template <class Self, class A, class KeyFn, class S>
+BRAINSORT_ALWAYS_INLINE void level_body(A s, A d, size_t m, uint64_t mask, KeyFn key, bool result_in_s, LevelTables tabs, int level, S& scratch) {
+    using namespace radix_detail;
+    using T = typename A::value_type;
+    using K = typename A::key_type;
+    if (m < 2 || mask == 0) { if (!result_in_s) copy_forward(s, 0, d, 0, m); return; }
+    if (m <= kInsertionMax) {
+        insertion_sort(s, 0, m);
+        if (!result_in_s) copy_forward(s, 0, d, 0, m);
+        return;
+    }
+    const int    bits   = highest_bit(mask) + 1;
+    uint32_t*    tab[2] = {tabs.at(level), tabs.at(level + 1)};
+    const size_t bytes  = m * sizeof(T);
+    if (bytes >= msd_min_bytes() && bits > 8 && level + 1 < kMaxLevels) {   // still out of cache: one more level
+        const int      w     = msd_width(bytes, bits);
+        const int      shift = bits - w;
+        const uint32_t dmask = (1u << w) - 1;
+        const size_t   B     = size_t(1) << w;
+        std::memset(tab[0], 0, B * sizeof(uint32_t));
+        if constexpr (A::counted) A::hooks::on_table_sweep(tab[0], B, sizeof(uint32_t), false, true);
+        const K k0 = key(s.get(0));
+        K       xm = 0;
+        for (size_t i = 0; i < m; ++i) {
+            const K        u  = key(s.get(i));
+            const uint32_t dg = static_cast<uint32_t>(u >> shift) & dmask;
+            xm |= u ^ k0;
+            if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
+            ++tab[0][dg];
+        }
+        if constexpr (A::counted) A::hooks::on_table_sweep(tab[0], B, sizeof(uint32_t), true, true);
+        prefix_sums(tab[0], B);
+        msd_scatter(s, d, m, key, shift, dmask, tab[0], B, scratch);
+        const uint64_t low = static_cast<uint64_t>(xm) & ((uint64_t(1) << shift) - 1);
+        size_t lo = 0;
+        for (size_t b = 0; b < B; ++b) {
+            if constexpr (A::counted) A::hooks::on_table_read(tab[0] + b, sizeof(uint32_t));
+            const size_t hi = tab[0][b];
+            if (hi > lo) Self::run(d.sub(lo, hi - lo), s.sub(lo, hi - lo), hi - lo, low, key, !result_in_s, tabs, level + 1, scratch);
+            lo = hi;
+        }
+        return;
+    }
+    // In cache: the fused LSD passes. The histogram of the lowest live digit
+    // also measures the bucket's exact mask; if that digit turns out
+    // constant, the histogram of the next live one is built instead.
+    const DigitPlan plan = make_plan(bits, digit_width(bits, m, kSplitMaxDigit));
+    int       order[kMaxPasses];
+    int       live = live_passes(plan, mask, order);
+    if (live == 0) { if (!result_in_s) copy_forward(s, 0, d, 0, m); return; }
+    const size_t W = plan.width();
+    int      p0    = order[0];
+    int      shift = plan.shift[p0];
+    uint32_t dmask = (1u << plan.bits[p0]) - 1;
+    std::memset(tab[0], 0, W * sizeof(uint32_t));
+    if constexpr (A::counted) A::hooks::on_table_sweep(tab[0], W, sizeof(uint32_t), false, true);
+    const K k0 = key(s.get(0));
+    K       xm = 0;
+    for (size_t i = 0; i < m; ++i) {
+        const K        u  = key(s.get(i));
+        const uint32_t dg = static_cast<uint32_t>(u >> shift) & dmask;
+        xm |= u ^ k0;
+        if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
+        ++tab[0][dg];
+    }
+    if (static_cast<uint64_t>(xm) != mask) {
+        live = live_passes(plan, static_cast<uint64_t>(xm), order);
+        if (live == 0) { if (!result_in_s) copy_forward(s, 0, d, 0, m); return; }
+        if (order[0] != p0) {
+            p0    = order[0];
+            shift = plan.shift[p0];
+            dmask = (1u << plan.bits[p0]) - 1;
+            std::memset(tab[0], 0, W * sizeof(uint32_t));
+            if constexpr (A::counted) A::hooks::on_table_sweep(tab[0], W, sizeof(uint32_t), false, true);
+            for (size_t i = 0; i < m; ++i) {
+                const uint32_t dg = static_cast<uint32_t>(key(s.get(i)) >> shift) & dmask;
+                if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
+                ++tab[0][dg];
+            }
+        }
+    }
+    if constexpr (A::counted) A::hooks::stats().passes_skipped += static_cast<uint64_t>(plan.passes - live);
+    bool ended;
+    radix_passes<uint32_t>(s, d, m, plan, key, order, live, 0, tab, result_in_s, false, ended);
+}
+template <class A, class KeyFn, class S>
+struct Level {
+    static void run(A s, A d, size_t m, uint64_t mask, KeyFn key, bool result_in_s, LevelTables tabs, int level, S& scratch) {
+        level_body<Level>(s, d, m, mask, key, result_in_s, tabs, level, scratch);
+    }
+};
+#ifdef BRAINSORT_X86_64
+template <class A, class KeyFn, class S>
+struct LevelBmi2 {
+    BRAINSORT_TARGET_BMI2 static void run(A s, A d, size_t m, uint64_t mask, KeyFn key, bool result_in_s, LevelTables tabs, int level, S& scratch) {
+        level_body<LevelBmi2>(s, d, m, mask, key, result_in_s, tabs, level, scratch);
+    }
+};
+#endif
+
 // Radix of src[0,n) with dst[0,n) as the other buffer under plan P, with
 // the result in src or dst as requested. Builds the histogram of the first
-// live pass here, verifying a speculative plan on the way: the exact XOR
-// mask of the keys and any key bits above the plan's width are accumulated,
-// and if either shows the sample misjudged the keys the function returns
-// false without moving anything (xm_out then holds the exact mask for the
-// retry). Always inlined so a BMI2-targeted key functor is inlined into a
-// BMI2 caller.
-template <class A, class KeyFn>
+// pass here (the top digit when the part takes an MSD level, the lowest
+// live digit otherwise), verifying a speculative plan on the way: the exact
+// XOR mask of the keys and any key bits above the plan's width are
+// accumulated, and if either shows the sample misjudged the keys the
+// function returns false without moving anything (xm_out then holds the
+// exact mask for the retry). Always inlined so a BMI2-targeted key functor
+// is inlined into a BMI2 caller; Bmi2 selects the level function compiled
+// for that caller. With `free` the result may stay in either buffer and
+// `ended_in_src` says which; this saves the copy back of a one-pass sort.
+template <bool Bmi2, class A, class KeyFn, class S>
 BRAINSORT_ALWAYS_INLINE bool radix_exec(A src, A dst, size_t n, int chunk, const RadixPlan& P, KeyFn key,
-                                        uint64_t domain_mask, bool result_in_src, HistStore hs, uint64_t& xm_out) {
+                                        uint64_t domain_mask, bool result_in_src, S& scratch, uint64_t& xm_out,
+                                        bool free, bool& ended_in_src) {
     using namespace radix_detail;
     using T  = typename A::value_type;
     using K  = typename A::key_type;
@@ -1234,24 +1465,56 @@ BRAINSORT_ALWAYS_INLINE bool radix_exec(A src, A dst, size_t n, int chunk, const
     int       order[kMaxPasses];
     const int live = live_passes(plan, domain_mask, order);
     if (live == 0) {
-        if (!result_in_src) copy_forward(src, 0, dst, 0, n);
+        if (!free && !result_in_src) copy_forward(src, 0, dst, 0, n);
+        ended_in_src = free || result_in_src;
         return true;
     }
-    const size_t        width = plan.width();
-    const size_t        need  = live > 1 ? 2 * width : width;
-    AuxRaw<uint32_t, A> local(hs.p && hs.n >= need ? 0 : need);
-    uint32_t*           base   = (hs.p && hs.n >= need) ? hs.p : local.data();
-    uint32_t*           tab[2] = {base, live > 1 ? base + width : base};
-    std::memset(tab[0], 0, width * sizeof(uint32_t));
-    if constexpr (A::counted) {
-        A::hooks::stats().passes_skipped += static_cast<uint64_t>(plan.passes - live);
-        A::hooks::on_table_sweep(tab[0], width, sizeof(uint32_t), false, true);
+    const size_t width = plan.width();
+    // The MSD level: the part is out of cache and takes two passes or more.
+    // Its digit is the top of the bits that vary (the domain mask is exact
+    // for an exact plan; a speculative plan assumes every bit varies).
+    const uint64_t dm       = domain_mask & (P.bits >= 64 ? ~uint64_t(0) : (uint64_t(1) << P.bits) - 1);
+    const int      bits_eff = dm != 0 ? highest_bit(dm) + 1 : P.bits;
+    const bool     msd      = live >= 2 && n * sizeof(T) >= msd_min_bytes() && bits_eff > 8;
+    LevelTables    tabs;
+    uint32_t*      tab[2];
+    int            shift;
+    uint32_t       dmask;
+    size_t         B = 0, W = width;
+    if (msd) {
+        const int w = msd_width(n * sizeof(T), bits_eff);
+        shift = bits_eff - w;
+        dmask = (1u << w) - 1;
+        B = W  = size_t(1) << w;
+        const HistStore hs = scratch.hist(LevelTables::need(size_t(1) << kMsdMaxBits));
+        tabs   = LevelTables{hs.p, size_t(1) << kMsdMaxBits};
+        tab[0] = tabs.at(0);
+        tab[1] = tabs.at(1);
+    } else {
+        shift = plan.shift[order[0]];
+        dmask = (1u << plan.bits[order[0]]) - 1;
+        const HistStore hs = scratch.hist(live > 1 ? 2 * width : width);
+        tab[0] = hs.p;
+        tab[1] = live > 1 ? hs.p + width : hs.p;
     }
-    const int      shift = plan.shift[order[0]];
-    const uint32_t dmask = (1u << plan.bits[order[0]]) - 1;
-    if (P.exact) {
+    std::memset(tab[0], 0, W * sizeof(uint32_t));
+    if constexpr (A::counted) {
+        if (!msd) A::hooks::stats().passes_skipped += static_cast<uint64_t>(plan.passes - live);
+        A::hooks::on_table_sweep(tab[0], W, sizeof(uint32_t), false, true);
+    }
+    K domain_xm = 0;   // the exact mask in the plan's domain, measured when the buckets need it
+    if (P.exact && !msd) {
         for (size_t i = 0; i < n; ++i) {
             const uint32_t dg = static_cast<uint32_t>(key(src.get(i)) >> shift) & dmask;
+            if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
+            ++tab[0][dg];
+        }
+    } else if (P.exact) {
+        const K u0 = key(src.get(0));
+        for (size_t i = 0; i < n; ++i) {
+            const K        u  = key(src.get(i));
+            const uint32_t dg = static_cast<uint32_t>(u >> shift) & dmask;
+            domain_xm |= u ^ u0;
             if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
             ++tab[0][dg];
         }
@@ -1259,6 +1522,7 @@ BRAINSORT_ALWAYS_INLINE bool radix_exec(A src, A dst, size_t n, int chunk, const
         // The XOR mask check covers shift and pext (bits outside the plan
         // must be constant); sub needs every key within [base, base + 2^bits).
         const K k0     = A::key(src.get(0), chunk);
+        const K u0     = key.raw(k0);
         const K ovmask = P.kind == RadixPlan::sub && P.bits < kb ? static_cast<K>(~K(0) << P.bits) : K(0);
         K xm = 0, ov = 0;
         for (size_t i = 0; i < n; ++i) {
@@ -1267,6 +1531,7 @@ BRAINSORT_ALWAYS_INLINE bool radix_exec(A src, A dst, size_t n, int chunk, const
             const K u  = key.raw(kr);
             xm |= kr ^ k0;
             ov |= u & ovmask;
+            domain_xm |= u ^ u0;
             const uint32_t dg = static_cast<uint32_t>(u >> shift) & dmask;
             if constexpr (A::counted) A::hooks::on_table_rw(tab[0] + dg, sizeof(uint32_t));
             ++tab[0][dg];
@@ -1274,45 +1539,74 @@ BRAINSORT_ALWAYS_INLINE bool radix_exec(A src, A dst, size_t n, int chunk, const
         xm_out = xm;
         if ((xm & ~static_cast<K>(P.assumed)) != 0 || ov != 0) return false;
     }
-    radix_passes<uint32_t>(src, dst, n, plan, key, order, live, 0, tab, result_in_src);
+    if (!msd) {
+        radix_passes<uint32_t>(src, dst, n, plan, key, order, live, 0, tab, result_in_src, free, ended_in_src);
+        return true;
+    }
+    const uint64_t low = static_cast<uint64_t>(domain_xm) & ((uint64_t(1) << shift) - 1);
+    if constexpr (A::counted) A::hooks::on_table_sweep(tab[0], B, sizeof(uint32_t), true, true);
+    prefix_sums(tab[0], B);
+    msd_scatter(src, dst, n, key, shift, dmask, tab[0], B, scratch);
+    if (shift == 0) {   // the digit covered every varying bit: the scatter sorted the part
+        if (!free && result_in_src) copy_forward(dst, 0, src, 0, n);
+        ended_in_src = !free && result_in_src;
+        return true;
+    }
+    // The buckets all end in the same buffer: src, whose copies are in cache.
+    const bool rs = free || result_in_src;
+    ended_in_src  = rs;
+#ifdef BRAINSORT_X86_64
+    using L = std::conditional_t<Bmi2, LevelBmi2<A, KeyFn, S>, Level<A, KeyFn, S>>;
+#else
+    using L = Level<A, KeyFn, S>;
+#endif
+    size_t lo = 0;
+    for (size_t b = 0; b < B; ++b) {
+        if constexpr (A::counted) A::hooks::on_table_read(tab[0] + b, sizeof(uint32_t));
+        const size_t hi = tab[0][b];
+        if (hi > lo) L::run(dst.sub(lo, hi - lo), src.sub(lo, hi - lo), hi - lo, low, key, !rs, tabs, 1, scratch);
+        lo = hi;
+    }
     return true;
 }
 
 #ifdef BRAINSORT_X86_64
-template <class A>
+template <class A, class S>
 BRAINSORT_TARGET_BMI2 inline bool radix_exec_pext(A src, A dst, size_t n, int chunk, const RadixPlan& P,
-                                                  uint64_t domain_mask, bool result_in_src, HistStore hs, uint64_t& xm_out) {
+                                                  uint64_t domain_mask, bool result_in_src, S& scratch, uint64_t& xm_out,
+                                                  bool free, bool& ended_in_src) {
     using K = typename A::key_type;
-    return radix_exec(src, dst, n, chunk, P, radix_detail::PextKey<A>{chunk, static_cast<K>(P.pmask)}, domain_mask,
-                      result_in_src, hs, xm_out);
+    return radix_exec<true>(src, dst, n, chunk, P, radix_detail::PextKey<A>{chunk, static_cast<K>(P.pmask)}, domain_mask,
+                            result_in_src, scratch, xm_out, free, ended_in_src);
 }
 #endif
 
 // Dispatch on the plan's key function. `est` is the varying-bit mask the plan
 // was made from; for an exact plan it tells which passes are trivial.
-template <class A>
-inline bool radix_run(A src, A dst, size_t n, int chunk, const RadixPlan& P, uint64_t est, bool result_in_src, HistStore hs, uint64_t& xm_out) {
+template <class A, class S>
+inline bool radix_run(A src, A dst, size_t n, int chunk, const RadixPlan& P, uint64_t est, bool result_in_src, S& scratch, uint64_t& xm_out,
+                      bool free, bool& ended_in_src) {
     using namespace radix_detail;
     using K = typename A::key_type;
     [[maybe_unused]] constexpr int kb = key_bits<K>();
     const uint64_t all = ~uint64_t(0);
     switch (P.kind) {
         case RadixPlan::shift:
-            return radix_exec(src, dst, n, chunk, P, ShiftKey<A>{chunk, P.low}, P.exact ? (est >> P.low) : all, result_in_src, hs, xm_out);
+            return radix_exec<false>(src, dst, n, chunk, P, ShiftKey<A>{chunk, P.low}, P.exact ? (est >> P.low) : all, result_in_src, scratch, xm_out, free, ended_in_src);
         case RadixPlan::pext: {
             const uint64_t dm = P.exact && P.bits < kb ? (uint64_t(1) << P.bits) - 1 : all;
             // The counted path runs the portable PEXT on every CPU so its
             // numbers do not depend on BMI2; the timed path only gets here
             // when the CPU has it.
 #ifdef BRAINSORT_X86_64
-            if constexpr (!A::counted) return radix_exec_pext(src, dst, n, chunk, P, dm, result_in_src, hs, xm_out);
+            if constexpr (!A::counted) return radix_exec_pext(src, dst, n, chunk, P, dm, result_in_src, scratch, xm_out, free, ended_in_src);
 #endif
-            return radix_exec(src, dst, n, chunk, P, PextKeySoft<A>{chunk, static_cast<K>(P.pmask)}, dm, result_in_src, hs, xm_out);
+            return radix_exec<false>(src, dst, n, chunk, P, PextKeySoft<A>{chunk, static_cast<K>(P.pmask)}, dm, result_in_src, scratch, xm_out, free, ended_in_src);
         }
         case RadixPlan::sub:
-            return radix_exec(src, dst, n, chunk, P, SubKey<A>{chunk, static_cast<K>(P.base)}, all, result_in_src, hs, xm_out);
+            return radix_exec<false>(src, dst, n, chunk, P, SubKey<A>{chunk, static_cast<K>(P.base)}, all, result_in_src, scratch, xm_out, free, ended_in_src);
         default:
-            return radix_exec(src, dst, n, chunk, P, FullKey<A>{chunk}, P.exact ? est : all, result_in_src, hs, xm_out);
+            return radix_exec<false>(src, dst, n, chunk, P, FullKey<A>{chunk}, P.exact ? est : all, result_in_src, scratch, xm_out, free, ended_in_src);
     }
 }
 
@@ -1322,7 +1616,8 @@ inline bool radix_run(A src, A dst, size_t n, int chunk, const RadixPlan& P, uin
 // sorts. Returns false, with nothing moved, if two distinct keys shared a
 // bucket; xm_out then holds the exact XOR mask for the fallback.
 template <class A>
-inline bool dict_sort(A src, A dst, size_t n, int chunk, uint64_t mul, bool result_in_src, HistStore hs, uint64_t& xm_out) {
+inline bool dict_sort(A src, A dst, size_t n, int chunk, uint64_t mul, bool result_in_src, HistStore hs, uint64_t& xm_out,
+                      bool free, bool& ended_in_src) {
     using T  = typename A::value_type;
     using K  = typename A::key_type;
     constexpr size_t B = dict_buckets<T>();
@@ -1362,7 +1657,8 @@ inline bool dict_sort(A src, A dst, size_t n, int chunk, uint64_t mul, bool resu
         if constexpr (A::counted) A::hooks::on_table_rw(cnt + h, sizeof(uint32_t));
         dst.set(cnt[h]++, e);
     }
-    if (result_in_src) copy_forward(dst, 0, src, 0, n);
+    if (!free && result_in_src) copy_forward(dst, 0, src, 0, n);
+    ended_in_src = !free && result_in_src;
     return true;
 }
 
@@ -1374,7 +1670,7 @@ class Scratch {
 public:
     using T = typename A::value_type;
     Scratch() = default;
-    ~Scratch() { delete buf_; delete hist_; }
+    ~Scratch() { delete buf_; delete hist_; delete wc_; }
     Scratch(const Scratch&) = delete;
     Scratch& operator=(const Scratch&) = delete;
     // A view of k elements; grows (discarding contents) if needed.
@@ -1384,6 +1680,7 @@ public:
         return buf_->arr().sub(0, k);
     }
     size_t capacity() const { return buf_ ? buf_->size() : 0; }
+    T*     buffer() const { return buf_ ? buf_->arr().data() : nullptr; }
     // The reusable histogram arena (uint32 counters), grown to the largest
     // table a radix pass has asked for and kept for the rest of the sort.
     HistStore hist(size_t entries) {
@@ -1391,9 +1688,16 @@ public:
         else if (hist_->size() < entries) { delete hist_; hist_ = nullptr; hist_ = new AuxRaw<uint32_t, A>(entries); }
         return HistStore{hist_->data(), hist_->size()};
     }
+    // The write-combining buffers of the MSD scatter, likewise.
+    unsigned char* wc(size_t bytes) {
+        if (!wc_) wc_ = new AuxRaw<unsigned char, A>(bytes);
+        else if (wc_->size() < bytes) { delete wc_; wc_ = nullptr; wc_ = new AuxRaw<unsigned char, A>(bytes); }
+        return wc_->data();
+    }
 private:
-    AuxBuffer<T, A>*     buf_  = nullptr;
-    AuxRaw<uint32_t, A>* hist_ = nullptr;
+    AuxBuffer<T, A>*          buf_  = nullptr;
+    AuxRaw<uint32_t, A>*      hist_ = nullptr;
+    AuxRaw<unsigned char, A>* wc_   = nullptr;
 };
 
 // Radix sort of one part, src[0,n) with dst[0,n) as the other buffer, the
@@ -1405,10 +1709,12 @@ private:
 // exact mask), so no pass is ever wasted on a wrong assumption twice.
 template <int DigitBits, class A, class S>
 inline void radix_part(A src, A dst, size_t n, int chunk, S& scratch, uint64_t mask, bool mask_exact, const Pivot& info,
-                       bool have_range, uint64_t rmin, uint64_t rmax, int max_digit, bool result_in_src) {
+                       bool have_range, uint64_t rmin, uint64_t rmax, int max_digit, bool result_in_src,
+                       bool free = false, bool* ended_in_src = nullptr) {
     using T = typename A::value_type;
     using K = typename A::key_type;
-    auto done = [&] { if (!result_in_src) copy_forward(src, 0, dst, 0, n); };
+    bool ended = true;
+    auto done = [&] { if (!free && !result_in_src) copy_forward(src, 0, dst, 0, n); ended = free || result_in_src; if (ended_in_src) *ended_in_src = ended; };
     if (n < 2) { done(); return; }
     const bool allow_pext = A::counted || have_bmi2();
     RadixPlan P = choose_plan<K>(mask, mask_exact, have_range, rmin, rmax, n, max_digit, DigitBits, allow_pext);
@@ -1416,19 +1722,21 @@ inline void radix_part(A src, A dst, size_t n, int chunk, S& scratch, uint64_t m
     uint64_t xm = 0;
     if (info.dict && P.passes() >= 2) {
         if constexpr (A::counted) ++A::hooks::stats().dict_tries;
-        if (dict_sort(src, dst, n, chunk, info.dict_mul, result_in_src, scratch.hist(dict_entries<T>()), xm)) {
+        if (dict_sort(src, dst, n, chunk, info.dict_mul, result_in_src, scratch.hist(dict_entries<T>()), xm, free, ended)) {
             if constexpr (A::counted) ++A::hooks::stats().dict_hits;
+            if (ended_in_src) *ended_in_src = ended;
             return;
         }
         mask = xm; mask_exact = true;
         P = choose_plan<K>(mask, true, false, 0, 0, n, max_digit, DigitBits, allow_pext);
         if (P.bits == 0) { done(); return; }
     }
-    if (radix_run(src, dst, n, chunk, P, mask, result_in_src, scratch.hist(P.table_entries()), xm)) return;
+    if (radix_run(src, dst, n, chunk, P, mask, result_in_src, scratch, xm, free, ended)) { if (ended_in_src) *ended_in_src = ended; return; }
     if constexpr (A::counted) ++A::hooks::stats().plan_retries;
     P = choose_plan<K>(xm, true, false, 0, 0, n, max_digit, DigitBits, allow_pext);   // exact: cannot fail
     if (P.bits == 0) { done(); return; }
-    radix_run(src, dst, n, chunk, P, xm, result_in_src, scratch.hist(P.table_entries()), xm);
+    radix_run(src, dst, n, chunk, P, xm, result_in_src, scratch, xm, free, ended);
+    if (ended_in_src) *ended_in_src = ended;
 }
 
 // ---- route 4 for two to four distinct keys: partition sort ------------------
@@ -1723,7 +2031,8 @@ inline bool partition_sort_few(A a, S& scratch, size_t n, int chunk, const Pivot
 // plans from the estimate and verifies while counting. For chunked keys,
 // chunks shared by every element are skipped first (chunk advances).
 template <int DigitBits, class A, class S>
-inline void radix_route(A a, S& scratch, size_t n, int& chunk, uint64_t mask, bool mask_known, bool unordered) {
+inline void radix_route(A a, S& scratch, size_t n, int& chunk, uint64_t mask, bool mask_known, bool unordered, bool free, bool& ended_in_src) {
+    ended_in_src = true;
     using T  = typename A::value_type;
     using KT = typename A::traits;
     using K  = typename A::key_type;
@@ -1792,18 +2101,21 @@ inline void radix_route(A a, S& scratch, size_t n, int& chunk, uint64_t mask, bo
         return;
     }
     A tmp = scratch.ensure(n);
-    radix_part<DigitBits>(a, tmp, n, chunk, scratch, est, mask_known, info, have_range, info.smin, info.smax, kRadixMaxDigit, true);
+    radix_part<DigitBits>(a, tmp, n, chunk, scratch, est, mask_known, info, have_range, info.smin, info.smax, kRadixMaxDigit, true, free, &ended_in_src);
 }
 
 // Sort a[0,n) given that all its elements share the key chunks before
 // `chunk`. Groups that tie on a chunk are sorted on the next chunk; all but
 // the largest group recurse, the largest one loops, so the recursion depth
 // is at most log2(n).
+// With `free` (fixed keys only) the result may stay in the scratch buffer;
+// `ended_in_src` says whether it is in a.
 template <int DigitBits, class A, class S>
-void sort_range(A a, S& scratch, size_t n, int chunk) {
+void sort_range(A a, S& scratch, size_t n, int chunk, bool free, bool& ended_in_src) {
     using T  = typename A::value_type;
     using KT = typename A::traits;
     [[maybe_unused]] const typename A::hooks::DepthScope depth{};
+    ended_in_src = true;
     for (;;) {
         if (n < 2) return;
         if (n <= kInsertionMax) { insertion_sort(a, 0, n); return; }
@@ -1824,7 +2136,7 @@ void sort_range(A a, S& scratch, size_t n, int chunk) {
         // on high disorder; otherwise a quarter of the adjacent pairs descending
         // is disorder enough that a split's cache cost is worth paying.
         const bool unordered = s.committed || s.descents * 4 >= n;
-        radix_route<DigitBits>(a, scratch, n, chunk, s.mask, s.has_mask, unordered);   // route 4
+        radix_route<DigitBits>(a, scratch, n, chunk, s.mask, s.has_mask, unordered, free && !KT::chunked, ended_in_src);   // route 4
 
         if constexpr (!KT::chunked) return;
         else {
@@ -1838,10 +2150,10 @@ void sort_range(A a, S& scratch, size_t n, int chunk) {
                 while (e < n && A::key(a.get(e), chunk) == k) ++e;
                 if (e - g > 1 && !KT::chunk_ends(eg, chunk)) {
                     if (e - g > big_len) {
-                        if (big_len > 1) sort_range<DigitBits>(a.sub(big_g, big_len), scratch, big_len, chunk + 1);
+                        if (big_len > 1) sort_range<DigitBits>(a.sub(big_g, big_len), scratch, big_len, chunk + 1, false, ended_in_src);
                         big_g = g; big_len = e - g;
                     } else {
-                        sort_range<DigitBits>(a.sub(g, e - g), scratch, e - g, chunk + 1);
+                        sort_range<DigitBits>(a.sub(g, e - g), scratch, e - g, chunk + 1, false, ended_in_src);
                     }
                 }
                 g = e;
@@ -1857,14 +2169,24 @@ void sort_range(A a, S& scratch, size_t n, int chunk) {
 }  // namespace brain_detail
 
 // Sort the view a[0, n). DigitBits <= 0 selects the digit width automatically.
+// With `free` the sorted elements may be left in the scratch buffer instead
+// of being copied back to a (a one-pass radix then saves that copy); the
+// return value says whether they are in a, and scratch.buffer() holds them
+// otherwise.
+template <int DigitBits, class A>
+inline bool brainsort_impl(A a, brain_detail::Scratch<A>& scratch, bool free) {
+    const size_t n = a.size();
+    if (n < 2) return true;
+    if (n <= brain_detail::kInsertionMax) { insertion_sort(a, 0, n); return true; }
+    if (n > 0xFFFFFFFFull) { merge_sort(a); return true; }   // positions and counters are 32-bit
+    bool ended_in_src = true;
+    brain_detail::sort_range<DigitBits>(a, scratch, n, 0, free, ended_in_src);
+    return ended_in_src;
+}
 template <int DigitBits, class A>
 inline void brainsort_impl(A a) {
-    const size_t n = a.size();
-    if (n < 2) return;
-    if (n <= brain_detail::kInsertionMax) { insertion_sort(a, 0, n); return; }
-    if (n > 0xFFFFFFFFull) { merge_sort(a); return; }   // positions and counters are 32-bit
     brain_detail::Scratch<A> scratch;
-    brain_detail::sort_range<DigitBits>(a, scratch, n, 0);
+    brainsort_impl<DigitBits>(a, scratch, false);
 }
 
 template <class A>

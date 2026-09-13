@@ -270,11 +270,13 @@ inline int live_passes(const DigitPlan& plan, uint64_t keymask, int* order) {
 // Scatter passes order[q0..live) of s[0,n) with d as the other buffer.
 // tab[q0 & 1] must hold the raw counts of pass order[q0]; the counts of each
 // following pass are built while the previous one scatters, so the two
-// tables alternate. The data ends up in s or d as `result_in_src` asks.
+// tables alternate. The data ends up in s or d as `result_in_src` asks, or,
+// when `free` is set, wherever the last pass left it; `ended_in_src` says
+// where that is either way.
 template <class Cnt, class Acc, class KeyFn>
 BRAINSORT_ALWAYS_INLINE void radix_passes(Acc s, Acc d, size_t n, const DigitPlan& plan, KeyFn key,
                                           const int* order, int live, int q0, Cnt* const* tab,
-                                          bool result_in_src) {
+                                          bool result_in_src, bool free, bool& ended_in_src) {
     const size_t width  = plan.width();
     bool         in_src = true;
     for (int q = q0; q < live; ++q) {
@@ -311,8 +313,10 @@ BRAINSORT_ALWAYS_INLINE void radix_passes(Acc s, Acc d, size_t n, const DigitPla
         std::swap(s, d);
         in_src = !in_src;
     }
+    if (free) { ended_in_src = in_src; return; }
     if (in_src != result_in_src)
         for (size_t i = 0; i < n; ++i) d.set(i, s.get(i));
+    ended_in_src = result_in_src;
 }
 
 // Fused LSD radix of src[0,n) with dst[0,n) as the other buffer. `store` is
@@ -349,7 +353,8 @@ BRAINSORT_ALWAYS_INLINE void lsd_radix_fused(Acc src, Acc dst, size_t n, const D
             ++tab[0][dg];
         }
     }
-    radix_passes<Cnt>(src, dst, n, plan, key, order, live, 0, tab, result_in_src);
+    bool ended;
+    radix_passes<Cnt>(src, dst, n, plan, key, order, live, 0, tab, result_in_src, false, ended);
 }
 
 }  // namespace radix_detail
