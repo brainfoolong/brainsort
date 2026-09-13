@@ -89,6 +89,7 @@ benchmark, not published). A stable Rust 1.86 or newer is all it needs.
 cd rust
 cargo test --workspace --all-features          # the library tests, the harness's unit tests
 cargo run --release -p brainsort-bench -- --golden --max-n 1000000   # the golden equivalence with results/counts.csv
+cargo run --release -p brainsort-bench -- --rust-golden              # results/rust-counts.csv: the Rust sorts as shipped, up to 100,000 elements
 cargo run --release -p brainsort-bench -- --bench --out ../results/<id>.rust.api.md   # the API benchmark
 ```
 
@@ -140,14 +141,21 @@ default, about a minute; `--golden-max-n 1000000` adds the million-element
 rows, about ten minutes more. The Rust port is held to the same file:
 `cargo run --release -p brainsort-bench -- --golden` in `rust/` recomputes
 every brainsort row through the Rust code and fails on any column that
-differs.
+differs. A second file, [results/rust-counts.csv](results/rust-counts.csv),
+holds what can be counted of the Rust sorts as shipped on the same cells
+(comparisons, compare flips, key reads, scratch memory:
+[docs/decisions/0010.md](docs/decisions/0010.md)); `cargo test` in `rust/`
+recomputes it up to 10,000 elements (100,000 in release) and
+`cargo run --release -p brainsort-bench -- --rust-golden` up to 100,000,
+holding its brainsort rows to `counts.csv` as well.
 A change to brainsort's planner or to a port is caught even when the output
 is still correct. When the change was intended, regenerate the file and
 commit it with the change:
 
 ```sh
-sh scripts/counts.sh                        # rewrites results/counts.csv, about twelve minutes
+sh scripts/counts.sh                        # rewrites results/counts.csv, about twelve minutes, then results/rust-counts.csv when cargo is installed
 ./build-linux/sortbench_tests --golden      # only the golden comparison
+cd rust && cargo run --release -p brainsort-bench -- --rust-counts   # only the Rust sorts' file, a few minutes
 ```
 
 ```powershell
@@ -183,7 +191,7 @@ It writes:
 | `results/<id>.meta.json` | the run stamp: id, host, OS, CPU, compiler, when, the code fingerprint, sizes, repetitions, rounds, seed, pinned CPU |
 | `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort), stamped the same way |
 | `results/<id>.rust.api.md` | the same benchmark of the Rust crate against `slice::sort`, `slice::sort_unstable`, radsort, voracious_radix_sort and rdst, stamped with the fingerprint of the Rust sources |
-| `site/index.html` | the website, from everything in `results/` |
+| `site/index.html`, `site/rust.html` | the website, from everything in `results/`: one complete page for the C++ library and one for the Rust crate, with a switch between them |
 
 `<id>` defaults to `<os>-<arch>-<compiler>`, e.g. `linux-x86-64-gcc13`.
 Environment variables: `BENCH_ID`, `BENCH_HOST` (a description of the
@@ -251,13 +259,16 @@ whatever sizes they were measured at.
 ### The website
 
 ```sh
-python3 scripts/website.py                          # results/ -> site/index.html
+python3 scripts/website.py                          # results/ -> site/index.html (C++) and site/rust.html (Rust)
 python3 scripts/website.py --out /tmp/x.html --results /tmp/results
 python3 scripts/website.py --allow-stale            # include timing that measured other code, marked stale
 ```
 
-The page is one self-contained HTML file with no external resources; open
-it locally or serve `site/`. It reads every `counts*.csv` and every
+Each page is one self-contained HTML file with no external resources; open
+them locally or serve `site/`. The two pages have the same sections and
+controls; the harness timing is on the C++ page only, the deterministic
+counts are on both, and every timed number is on the page of the language
+that was timed ([docs/decisions/0009.md](docs/decisions/0009.md)). It reads every `counts*.csv` and every
 `<id>.csv` / `.meta.json` / `.api.md` in the results directory.
 
 **Staleness.** Every timing file carries a fingerprint of the measured

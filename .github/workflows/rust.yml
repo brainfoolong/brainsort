@@ -126,6 +126,11 @@ jobs:
       # a smaller one than the workstation that produced the golden file.
       - name: Recompute every brainsort row through the Rust port's counted view
         run: cargo run --release -p brainsort-bench -- --golden --max-n 100000
+      # The Rust sorts as shipped: comparisons, compare flips, key reads and
+      # scratch memory of every row of results/rust-counts.csv, and its
+      # brainsort rows held to counts.csv.
+      - name: Recompute every row of results/rust-counts.csv
+        run: cargo run --release -p brainsort-bench -- --rust-golden --max-n 100000
 
   miri:
     name: Miri (scalar build)

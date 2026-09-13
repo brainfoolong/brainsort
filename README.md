@@ -70,6 +70,16 @@ of every cell of [results/counts.csv](results/counts.csv) must come out the
 same from the Rust code ([docs/decisions/0008.md](docs/decisions/0008.md)).
 The crate keeps the C++ version number; one tag releases both.
 
+The Rust sorts a program can call are counted too, as shipped:
+[results/rust-counts.csv](results/rust-counts.csv) holds, on the same
+cells, what a Rust program can observe of `slice::sort` (driftsort),
+`slice::sort_unstable` (ipnsort), radsort, voracious_radix_sort and rdst
+without their source: comparisons and their flips through the comparator,
+key reads through the key traits, scratch memory through the allocator. An
+element move in Rust is a plain copy with no hook, so bytes moved are
+counted for brainsort alone ([docs/decisions/0010.md](docs/decisions/0010.md)).
+The test suite recomputes that file as well.
+
 ## Results in short
 
 Measured against the upstream code as it ships (libstdc++ `std::sort` and
@@ -83,7 +93,8 @@ long it takes, so it is the same on every machine. It is derived from
 [results/counts.csv](results/counts.csv) by `scripts/scorecard.py`, and CI
 fails when it is out of date. A cell is one key type on one input pattern; the
 radix baselines are brainsort's own building blocks and never count as
-opponents.
+opponents. The table is the Rust crate's as well: its test suite holds the
+crate to every one of these counts.
 
 <!-- scorecard:begin -->
 | deterministic, n = 100,000, 45 cells | against the stable sorts | against every sort |
@@ -92,6 +103,21 @@ opponents.
 | comparisons: brainsort lowest or tied | **40 / 45** | 40 / 45 |
 | scratch memory: brainsort lowest or tied | **16 / 45** | 12 / 45 |
 <!-- scorecard:end -->
+
+The same for the Rust crate against the Rust sorts as shipped, from
+[results/rust-counts.csv](results/rust-counts.csv), on the metrics a Rust
+program can count of a sort it did not write (bytes moved are not among
+them; the comparator, the key traits and the allocator are). The stable
+Rust sorts are `slice::sort`, radsort and `voracious_stable_sort`; the
+unstable ones `slice::sort_unstable`, `voracious_sort` and rdst.
+
+<!-- scorecard-rust:begin -->
+| deterministic, n = 100,000, 45 cells | against the stable Rust sorts | against every Rust sort |
+|---|---:|---:|
+| comparisons: brainsort lowest or tied | **11 / 45** | 11 / 45 |
+| compare flips: brainsort lowest or tied | **20 / 45** | 20 / 45 |
+| scratch memory: brainsort lowest or tied | **28 / 45** | 12 / 45 |
+<!-- scorecard-rust:end -->
 
 What this says: on every input brainsort moves the fewest bytes of any stable
 sort, and on most it makes the fewest comparisons. It pays with scratch
@@ -108,12 +134,14 @@ prefixed and sparse keys) by a large margin and on nearly sorted input by a
 smaller one; where it loses, it loses on input that is already sorted, all
 equal or has a handful of distinct values, where the adaptive comparison
 sorts finish in one pass and brainsort's scout pass costs a little extra.
-Every such cell is on the page. The page also has the public API on plain
-vectors against `std::sort`, `std::stable_sort` and pdqsort, including the
-comparator overload, and the Rust crate against the Rust ecosystem
-(`slice::sort`, `slice::sort_unstable`, radsort, voracious_radix_sort,
-rdst) on the same inputs, with the two languages paired cell by cell where
-both were measured on one machine. On the radix crates' home ground, random
+Every such cell is on the website, which is one complete page per language
+with the same sections ([docs/decisions/0009.md](docs/decisions/0009.md)):
+the C++ page adds the public API on plain vectors against `std::sort`,
+`std::stable_sort` and pdqsort, including the comparator overload; the Rust
+page has the crate against the Rust ecosystem (`slice::sort`,
+`slice::sort_unstable`, radsort, voracious_radix_sort, rdst) on the same
+inputs, and both pages pair the two languages cell by cell where both were
+measured on one machine. On the radix crates' home ground, random
 32-bit keys, they are faster than brainsort; on nearly sorted, few-unique,
 string and struct inputs brainsort is ahead by two to four times.
 
@@ -308,7 +336,7 @@ bench/api_bench.cpp               the public API against std::sort, std::stable_
 include/sortbench/                the benchmark: element types and counted array view, our ports, registry, datasets, metrics, verifier, run stamp
 src/bench.cpp, src/test.cpp       benchmark driver and benchmark test suite
 third_party/                      upstream pdqsort.h and gfx timsort.hpp, vendored unmodified
-results/                          counts.csv (the golden file) and the committed workstation timing
+results/                          counts.csv (the golden file), rust-counts.csv (the Rust sorts as shipped) and the committed workstation timing
 scripts/                          build, counts, bench, website, scorecard, amalgamate
 docs/decisions/                   numbered decision records
 .github/workflows/                ci.yml (tests, benchmarks, website, GitHub Pages), rust.yml (the Rust port), release.yml (both libraries from one tag)

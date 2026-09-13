@@ -6,6 +6,14 @@
 //!       golden equivalence test; exit status 1 on any mismatch)
 //!   brainsort-bench --counts --type T --dataset D [--n N] [--seed S]
 //!       print the deterministic columns of one cell
+//!   brainsort-bench --rust-counts [--sizes 1000,10000,...] [--out FILE]
+//!       the deterministic numbers of every Rust sort as shipped (comparisons,
+//!       compare flips, key reads, scratch memory) on the cells of counts.csv,
+//!       into results/rust-counts.csv (1,000 to 1,000,000 elements by default)
+//!   brainsort-bench --rust-golden [--max-n N] [--rust-file PATH] [--golden-file PATH]
+//!       recompute every row of results/rust-counts.csv and report every
+//!       column that differs, then hold its brainsort rows to counts.csv
+//!       (exit status 1 on any mismatch)
 //!   brainsort-bench --bench [--max-n N] [--reps R] [--host TEXT] [--out FILE]
 //!       time brainsort against the Rust ecosystem on plain vectors and write
 //!       the Markdown table with its run stamp (the twin of brainsort_api_bench):
@@ -16,7 +24,7 @@ use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: brainsort-bench --golden [--max-n N] [--golden-file PATH]\n       brainsort-bench --counts --type T --dataset D [--n N] [--seed S]\n       brainsort-bench --bench [--max-n N] [--reps R] [--host TEXT] [--out FILE]"
+        "usage: brainsort-bench --golden [--max-n N] [--golden-file PATH]\n       brainsort-bench --counts --type T --dataset D [--n N] [--seed S]\n       brainsort-bench --rust-counts [--sizes 1000,10000,...] [--out FILE]\n       brainsort-bench --rust-golden [--max-n N] [--rust-file PATH] [--golden-file PATH]\n       brainsort-bench --bench [--max-n N] [--reps R] [--host TEXT] [--out FILE]"
     );
     std::process::exit(2)
 }
@@ -24,7 +32,9 @@ fn usage() -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
-    let (mut golden, mut counts, mut bench) = (false, false, false);
+    let (mut golden, mut counts, mut bench, mut rust_counts, mut rust_golden) = (false, false, false, false, false);
+    let mut sizes: Vec<usize> = vec![1_000, 10_000, 100_000, 1_000_000];
+    let mut rust_file = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../results/rust-counts.csv"));
     let mut max_n = 100_000usize;
     let mut bench_max_n = 100_000usize;
     let mut reps = 3usize;
@@ -41,6 +51,10 @@ fn main() {
             "--golden" => golden = true,
             "--counts" => counts = true,
             "--bench" => bench = true,
+            "--rust-counts" => rust_counts = true,
+            "--rust-golden" => rust_golden = true,
+            "--sizes" => sizes = need(&mut i).split(',').map(|v| v.trim().parse().unwrap_or_else(|_| usage())).collect(),
+            "--rust-file" => rust_file = PathBuf::from(need(&mut i)),
             "--reps" => reps = need(&mut i).parse().unwrap_or_else(|_| usage()),
             "--host" => host = need(&mut i),
             "--out" => out_path = need(&mut i),
@@ -61,6 +75,36 @@ fn main() {
     if bench {
         run_bench(reps, bench_max_n, &host, &out_path);
         return;
+    }
+    if rust_counts {
+        let out = if out_path.is_empty() { rust_file.clone() } else { PathBuf::from(&out_path) };
+        let rows = counts::run_matrix(&sizes, |r| eprintln!("{}", r.csv()));
+        std::fs::write(&out, counts::to_csv(&rows)).expect("write the counts file");
+        // A row that failed its check (a sort that did not sort, or did not keep
+        // equal keys in order) is a finding, recorded with ok = 0, not an error.
+        let failed: Vec<String> = rows.iter().filter(|r| !r.ok).map(|r| format!("{} {} n={} {}: {}", r.ty, r.dataset, r.n, r.algorithm, r.error)).collect();
+        eprintln!("wrote {}: {} rows, {} failed their check (recorded with ok = 0)", out.display(), rows.len(), failed.len());
+        for f in &failed {
+            eprintln!("  {f}");
+        }
+    }
+    if rust_golden {
+        let report = match counts::check_file(&rust_file, max_n, Some(&golden_file), |line| println!("{line}")) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
+        println!(
+            "rust-golden: {} rows of {} recomputed, {} mismatches, {} rows above n = {max_n} skipped; brainsort rows held to {}",
+            report.checked,
+            rust_file.display(),
+            report.failures.len(),
+            report.skipped,
+            golden_file.display()
+        );
+        std::process::exit(if report.failures.is_empty() { 0 } else { 1 });
     }
     if golden {
         let rows = match load_golden(&golden_file) {

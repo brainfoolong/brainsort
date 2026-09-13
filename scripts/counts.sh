@@ -7,8 +7,13 @@
 #   COUNTS_SIZES=10000000 sh scripts/counts.sh   ten million elements into
 #                                        results/counts-10000000.csv (an option, over an hour)
 #
+# When cargo is installed, the Rust sorts' counts follow into
+# results/rust-counts.csv (or rust-counts-<sizes>.csv): what can be counted
+# of the Rust ecosystem as shipped, on the same cells.
+#
 # Environment: COUNTS_SIZES (space separated), COUNTS_OUT (output file),
-# BUILD_DIR (default build-linux; built first).
+# COUNTS_NO_RUST (skip the Rust counts), BUILD_DIR (default build-linux;
+# built first).
 set -e
 cd "$(dirname "$0")/.."
 BUILD_DIR=${BUILD_DIR:-build-linux}
@@ -23,3 +28,8 @@ for n in $SIZES_LIST; do SIZES="$SIZES --n $n"; done
 mkdir -p results
 # shellcheck disable=SC2086
 "$BUILD_DIR/sortbench" --counts-only --all-types --all-algos --all-datasets $SIZES --csv "$OUT" "$@"
+if [ -z "${COUNTS_NO_RUST:-}" ] && command -v cargo >/dev/null 2>&1; then
+    RUST_OUT=$(echo "$OUT" | sed 's#results/counts#results/rust-counts#')
+    echo "== the Rust sorts: $RUST_OUT"
+    (cd rust && cargo run --release -p brainsort-bench -- --rust-counts --sizes "$(echo "$SIZES_LIST" | tr ' ' ',')" --out "../$RUST_OUT")
+fi

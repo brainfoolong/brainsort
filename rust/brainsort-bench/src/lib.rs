@@ -13,8 +13,108 @@
 use brainsort::internals::*;
 use std::cell::UnsafeCell;
 
+pub mod counts;
 pub mod datasets;
 pub mod timing;
+
+// ---- the counting allocator ----------------------------------------------------
+// The scratch memory of any sort, seen through the global allocator: armed
+// around one call, it records the peak of the bytes live and the number of
+// allocations. brainsort's counted view arms it too, so its row in
+// rust-counts.csv is measured like every other sort's and the check holds
+// it to the trace's own accounting. Armed per thread: the sorts run on the
+// calling thread, and a thread pool a crate keeps (rdst starts one on its
+// first call) must not be able to add its own start-up allocations.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+
+pub struct CountingAlloc;
+/// The sizes of the first armed allocations, for the mismatch report.
+const SIZES_KEPT: usize = 16;
+// Everything per thread, const-initialised and without a destructor, so the
+// allocator may read it at any time. Test threads count independently.
+thread_local! {
+    static ARMED: Cell<bool> = const { Cell::new(false) };
+    static ALLOC_CURRENT: Cell<usize> = const { Cell::new(0) };
+    static ALLOC_PEAK: Cell<usize> = const { Cell::new(0) };
+    static ALLOC_COUNT: Cell<u64> = const { Cell::new(0) };
+    static ALLOC_SIZES: Cell<[usize; SIZES_KEPT]> = const { Cell::new([0; SIZES_KEPT]) };
+}
+#[inline]
+fn armed() -> bool {
+    // A thread being torn down reads as not armed.
+    ARMED.try_with(|a| a.get()).unwrap_or(false)
+}
+fn alloc_grow(bytes: usize) {
+    let cur = ALLOC_CURRENT.get() + bytes;
+    ALLOC_CURRENT.set(cur);
+    ALLOC_PEAK.set(ALLOC_PEAK.get().max(cur));
+    let i = ALLOC_COUNT.get() as usize;
+    ALLOC_COUNT.set(ALLOC_COUNT.get() + 1);
+    if i < SIZES_KEPT {
+        let mut sizes = ALLOC_SIZES.get();
+        sizes[i] = bytes;
+        ALLOC_SIZES.set(sizes);
+    }
+}
+fn alloc_shrink(bytes: usize) {
+    ALLOC_CURRENT.set(ALLOC_CURRENT.get().saturating_sub(bytes));
+}
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc(l) };
+        if !p.is_null() && armed() {
+            alloc_grow(l.size());
+        }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc_zeroed(l) };
+        if !p.is_null() && armed() {
+            alloc_grow(l.size());
+        }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        if armed() {
+            alloc_shrink(l.size());
+        }
+        unsafe { System.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, new_size: usize) -> *mut u8 {
+        let q = unsafe { System.realloc(p, l, new_size) };
+        if !q.is_null() && armed() {
+            alloc_shrink(l.size());
+            alloc_grow(new_size);
+        }
+        q
+    }
+}
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
+
+/// What the allocator saw on this thread while armed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AllocStats {
+    pub peak: usize,
+    pub allocs: u64,
+    /// Bytes still live at disarm: 0 unless the sort leaked.
+    pub leak: usize,
+    /// The sizes of the first allocations, in order.
+    pub sizes: [usize; SIZES_KEPT],
+}
+pub fn alloc_arm() {
+    ALLOC_CURRENT.set(0);
+    ALLOC_PEAK.set(0);
+    ALLOC_COUNT.set(0);
+    ALLOC_SIZES.set([0; SIZES_KEPT]);
+    ARMED.set(true);
+}
+pub fn alloc_disarm() -> AllocStats {
+    ARMED.set(false);
+    AllocStats { peak: ALLOC_PEAK.get(), allocs: ALLOC_COUNT.get(), leak: ALLOC_CURRENT.get(), sizes: ALLOC_SIZES.get() }
+}
 
 // ---- element types ---------------------------------------------------------
 
@@ -651,6 +751,12 @@ pub struct DetRecord {
     pub ok: bool,
     pub error: String,
     pub values: Vec<(&'static str, String)>,
+    /// The scratch memory as the global allocator saw it: the same numbers
+    /// as `aux_peak_bytes` and `aux_allocs`, taken the way every other Rust
+    /// sort's are in `counts.rs`.
+    pub alloc_peak: usize,
+    pub alloc_allocs: u64,
+    pub alloc_sizes: [usize; SIZES_KEPT],
 }
 pub const DET_COLUMNS: [&str; 34] = [
     "reads",
@@ -731,10 +837,12 @@ pub fn counted_run<T: Item2>(items: &[T], pool: Option<&[u8]>, reference: &[T]) 
     });
     let view = View::<T, TraceHooks, TraceAlloc>::new(work.as_mut_ptr(), n);
     let mut scratch = Scratch::new();
+    alloc_arm();
     let result = brainsort_impl(view, &mut scratch, false, 0);
     drop(scratch);
+    let galloc = alloc_disarm();
     with_trace(|t| t.end());
-    let mut r = DetRecord::default();
+    let mut r = DetRecord { alloc_peak: galloc.peak, alloc_allocs: galloc.allocs, alloc_sizes: galloc.sizes, ..DetRecord::default() };
     if result.is_err() {
         r.error = "allocation failed".into();
         return (r, work);
