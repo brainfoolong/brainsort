@@ -79,6 +79,37 @@ Every build produces:
 After a change to `include/brainsort/`, regenerate the single header with
 `python3 scripts/amalgamate.py` (`--check` is what CTest and CI run).
 
+### The Rust port
+
+The crate lives in [rust/](rust/) as a Cargo workspace: `brainsort` (the
+published crate) and `brainsort-bench` (the counted harness and the API
+benchmark, not published). A stable Rust 1.86 or newer is all it needs.
+
+```sh
+cd rust
+cargo test --workspace --all-features          # the library tests, the harness's unit tests
+cargo run --release -p brainsort-bench -- --golden --max-n 1000000   # the golden equivalence with results/counts.csv
+cargo run --release -p brainsort-bench -- --bench --out ../results/<id>.rust.api.md   # the API benchmark
+```
+
+The tests take `BRAINSORT_TEST_QUICK=1` to cap the sizes (what Miri and
+the sanitizer runs use) and `--ignored large_inputs` for ten million
+elements. The scalar code is tested with `RUSTFLAGS="--cfg brainsort_no_simd"`,
+the compile-time vector build with `RUSTFLAGS="-C target-feature=+avx2,+bmi2"`.
+The other checks of CI, by hand:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo +nightly doc -p brainsort --no-deps --all-features               # RUSTDOCFLAGS="-D warnings --cfg docsrs"
+cargo +1.86.0 check -p brainsort --all-features --all-targets           # the minimum Rust version
+cargo check -p brainsort --no-default-features --target thumbv7em-none-eabi   # no_std
+cargo +nightly miri test -p brainsort --all-features --lib --test fuzz_smoke --test alloc_failure --test panic_safety   # RUSTFLAGS="--cfg brainsort_no_simd" BRAINSORT_TEST_QUICK=1
+cargo deny check                                                        # licenses, advisories, bans
+cargo publish -p brainsort --dry-run
+cd brainsort && cargo +nightly fuzz run sort -- -max_total_time=180     # needs cargo-fuzz
+```
+
 ## 3. Test
 
 ```sh
@@ -106,7 +137,10 @@ exactly. The suite also checks that the verifier rejects wrong output.
 cache-model misses, scratch memory, telemetry, two fingerprints), and fails
 on any difference. The rows up to 100,000 elements are recomputed by
 default, about a minute; `--golden-max-n 1000000` adds the million-element
-rows, about ten minutes more.
+rows, about ten minutes more. The Rust port is held to the same file:
+`cargo run --release -p brainsort-bench -- --golden` in `rust/` recomputes
+every brainsort row through the Rust code and fails on any column that
+differs.
 A change to brainsort's planner or to a port is caught even when the output
 is still correct. When the change was intended, regenerate the file and
 commit it with the change:
@@ -136,38 +170,44 @@ sh scripts/bench.sh              # Linux, WSL, macOS, MSYS2
 .\scripts\bench.ps1              # Windows
 ```
 
-The script builds, then runs every algorithm on every key type and input at
-1,000, 10,000, 100,000 and 1,000,000 elements, then the public-API benchmark,
-then builds the website. Expect about half an hour on a fast machine. It
-writes:
+The script builds, then runs every algorithm on every key type and input on
+one set of 100,000 elements with a few repetitions (timing is indicative
+and machine-bound; the deterministic counts are the measurement and cover
+every size), then the public-API benchmark in C++ and, when `cargo` is
+found, in Rust, then builds the website. A few minutes on a fast machine.
+It writes:
 
 | file | content |
 |---|---|
 | `results/<id>.csv` | the timing, one row per cell: wall time, CPU time, instructions, cycles, peak memory growth, repetitions |
 | `results/<id>.meta.json` | the run stamp: id, host, OS, CPU, compiler, when, the code fingerprint, sizes, repetitions, rounds, seed, pinned CPU |
-| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort at 100k and 1M elements), stamped the same way |
+| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort), stamped the same way |
+| `results/<id>.rust.api.md` | the same benchmark of the Rust crate against `slice::sort`, `slice::sort_unstable`, radsort, voracious_radix_sort and rdst, stamped with the fingerprint of the Rust sources |
 | `site/index.html` | the website, from everything in `results/` |
 
 `<id>` defaults to `<os>-<arch>-<compiler>`, e.g. `linux-x86-64-gcc13`.
 Environment variables: `BENCH_ID`, `BENCH_HOST` (a description of the
-machine that appears on the page), `BENCH_SIZES`, `BENCH_API_MAX_N`,
-`BUILD_DIR`, `BENCH_NO_SITE`. Extra arguments go to `sortbench`, e.g.
-`sh scripts/bench.sh --reps 11`.
+machine that appears on the page), `BENCH_SIZES` (default `100000`),
+`BENCH_REPS` (default 5), `BENCH_API_MAX_N` (unset: the quick API run at
+100,000 elements; `1000000` or `10000000` add the larger sizes), `BUILD_DIR`,
+`BENCH_NO_SITE`, `BENCH_NO_RUST`. Extra arguments go to `sortbench`, e.g.
+`sh scripts/bench.sh --pin 3`.
 
 How a cell is timed: one fresh process per cell, pinned to one CPU where the
-OS allows it; the meter's own overhead is measured and subtracted; 21 timed
-repetitions at 100,000 elements, medians reported, the lower median of two
-rounds over the whole matrix kept. Below 100,000 elements the timed region
-sorts enough independent copies to reach 100,000 elements and reports the
-time per sort, so the clock's cost stays small; above, the repetitions
-shrink in proportion, never below three. Every run is verified. The
-deterministic columns are not recomputed by a timing run (`--timing-only`);
-the website takes them from the counts files.
+OS allows it; the meter's own overhead is measured and subtracted; 5 timed
+repetitions at 100,000 elements by default, medians reported. With
+`BENCH_SIZES` set, below 100,000 elements the timed region sorts enough
+independent copies to reach 100,000 elements and reports the time per sort,
+so the clock's cost stays small; above, the repetitions shrink in
+proportion, never below three. Every run is verified. The deterministic
+columns are not recomputed by a timing run (`--timing-only`); the website
+takes them from the counts files.
 
-### Ten million elements
+### More sizes
 
-Both scripts stop at one million elements by default. Ten million is an
-option; the website shows every size it finds in `results/`:
+The timing scripts measure 100,000 elements by default. Other sizes, up to
+ten million, are an option; the website shows every size it finds in
+`results/`:
 
 ```sh
 COUNTS_SIZES=10000000 sh scripts/counts.sh     # -> results/counts-10000000.csv, over an hour
@@ -243,12 +283,41 @@ test suite holds every commit to them.
 | Windows MSVC | `windows-latest` | build, full CTest, benchmark |
 | Windows MinGW | `windows-latest`, MSYS2 UCRT64 | build, full CTest, benchmark |
 | Sanitizers, libFuzzer, Linux -m32 | `ubuntu-24.04`, Clang / GCC | tests only |
+| Rust | see [rust.yml](.github/workflows/rust.yml) | format, clippy, docs, MSRV, `no_std`, tests on six platforms (scalar, compile-time AVX2 and no-default-features variants, ten million elements), 32-bit, Miri, ASan, fuzzing, cargo-deny, package dry run, the golden equivalence, the API benchmark on four runners |
 | Website | `ubuntu-24.04` | downloads every result, builds `site/`, uploads it (and, on `main`, publishes it on GitHub Pages) |
 
-The benchmark jobs use `--reps 11` because shared runners are noisy; the
-page labels them as shared runners. To publish, enable GitHub Pages for the
-repository with **GitHub Actions** as the source (Settings, Pages). Nothing
-is measured twice: the website is assembled from the platform jobs' uploads.
+The benchmark jobs use 5 repetitions; the page labels them as shared
+runners. To publish, enable GitHub Pages for the repository with **GitHub
+Actions** as the source (Settings, Pages). Nothing is measured twice: the
+website is assembled from the platform jobs' uploads.
+
+### Releasing
+
+Both libraries carry one version: `BRAINSORT_VERSION` in
+`include/brainsort/detail/config.hpp` and `version` in
+`rust/brainsort/Cargo.toml` must agree. To release:
+
+1. Bump both versions, add the entry to `rust/brainsort/CHANGELOG.md`,
+   regenerate the single header (`python3 scripts/amalgamate.py`), commit.
+2. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
+3. [release.yml](.github/workflows/release.yml) checks that the tag and
+   both versions agree, runs the C++ and Rust test suites and the golden
+   equivalence, publishes the crate on crates.io and creates the GitHub
+   release with `brainsort-<version>.hpp`, a source archive and checksums.
+   `workflow_dispatch` with `dry_run` runs everything but the two
+   publishing steps.
+
+crates.io credentials: the workflow uses Trusted Publishing (OIDC) once it
+is configured for the crate on crates.io (crate settings, Trusted
+Publishing: owner `brainfoolong`, repository `brainsort`, workflow
+`release.yml`). crates.io requires the first version of a crate to be
+published with an API token, so for the first release add a repository
+secret `CARGO_REGISTRY_TOKEN` (an API token with the `publish-new` scope
+from [crates.io/settings/tokens](https://crates.io/settings/tokens)); the
+workflow uses it when the OIDC exchange is not available. After the first
+release, configure Trusted Publishing, delete the secret, and set the
+repository variable `BRAINSORT_CRATE_PUBLISHED` to `true` so CI runs
+cargo-semver-checks against the published baseline on pull requests.
 
 ## 5. Trustworthy numbers on your own machine
 
