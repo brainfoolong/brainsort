@@ -7,6 +7,9 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+# Not a member of the workspace in rust/: cargo-fuzz builds it on its own.
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 brainsort = { path = "..", version = "0.3.0" }

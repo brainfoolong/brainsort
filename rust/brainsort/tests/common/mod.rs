@@ -157,7 +157,11 @@ impl Natural for UserBytes {
 #[derive(Default)]
 pub struct Pool;
 pub fn leak(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
+    // Kept reachable, so that LeakSanitizer does not count them.
+    static KEPT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let s: &'static str = Box::leak(s.into_boxed_str());
+    KEPT.lock().unwrap().push(s);
+    s
 }
 pub fn padded(v: i64) -> String {
     format!("{:020}", v + (1i64 << 62))

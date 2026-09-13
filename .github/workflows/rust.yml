@@ -120,8 +120,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # Up to 100,000 elements, as the C++ test does: at 1,000,000 the plan
+      # depends on the size of the last-level cache the sort detects (the
+      # MSD scatter starts at a third of it), and the shared runners report
+      # a smaller one than the workstation that produced the golden file.
       - name: Recompute every brainsort row through the Rust port's counted view
-        run: cargo run --release -p brainsort-bench -- --golden --max-n 1000000
+        run: cargo run --release -p brainsort-bench -- --golden --max-n 100000
 
   miri:
     name: Miri (scalar build)
@@ -152,12 +156,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # Release profile, with the debug assertions and overflow checks kept:
+      # the api test instantiates the sort for some forty key types, and
+      # instrumenting that unoptimised takes rustc past the runner's memory
+      # (over 15 GB, the runner is killed); optimised it needs about 2 GB.
       - name: Test under ASan
         env:
-          RUSTFLAGS: -Zsanitizer=address
-          RUSTDOCFLAGS: -Zsanitizer=address
+          RUSTFLAGS: -Zsanitizer=address -Cdebug-assertions -Coverflow-checks
+          RUSTDOCFLAGS: -Zsanitizer=address -Cdebug-assertions -Coverflow-checks
           BRAINSORT_TEST_QUICK: 1
-        run: cargo test -p brainsort --all-features --target x86_64-unknown-linux-gnu -Zbuild-std
+        run: cargo test -p brainsort --all-features --release --target x86_64-unknown-linux-gnu -Zbuild-std
 
   fuzz:
     name: libFuzzer (three minutes)
