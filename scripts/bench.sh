@@ -9,7 +9,7 @@
 # Environment:
 #   BENCH_ID      file id (default: what the binary reports, e.g. linux-x86-64-gcc13)
 #   BENCH_HOST    a description of the machine for the stamp (default: none)
-#   BENCH_SIZES   element counts, space separated (default "1000 10000 100000 1000000")
+#   BENCH_SIZES   element counts, space separated (default "1000 10000 100000 1000000 10000000")
 #   BENCH_API_MAX_N  largest size of the API benchmark (default 10000000)
 #   BUILD_DIR     build directory (default build-linux; it is built first, so a
 #                 stale binary can never carry a fresh code fingerprint)
@@ -23,7 +23,7 @@ SB="$BUILD_DIR/sortbench"
 API="$BUILD_DIR/brainsort_api_bench"
 ID=${BENCH_ID:-$("$SB" --print-id)}
 SIZES=""
-for n in ${BENCH_SIZES:-1000 10000 100000 1000000}; do SIZES="$SIZES --n $n"; done
+for n in ${BENCH_SIZES:-1000 10000 100000 1000000 10000000}; do SIZES="$SIZES --n $n"; done
 mkdir -p results
 
 echo "== timing: results/$ID.csv"

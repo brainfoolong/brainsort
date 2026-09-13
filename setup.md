@@ -134,8 +134,8 @@ sh scripts/bench.sh              # Linux, WSL, macOS, MSYS2
 ```
 
 The script builds, then runs every algorithm on every key type and input at
-1,000, 10,000, 100,000 and 1,000,000 elements, then the public-API
-benchmark, then builds the website. Expect 20 to 40 minutes on a fast
+1,000, 10,000, 100,000, 1,000,000 and 10,000,000 elements, then the public-API
+benchmark, then builds the website. Expect about an hour on a fast
 machine. It writes:
 
 | file | content |

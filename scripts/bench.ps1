@@ -18,7 +18,7 @@ $sb  = Join-Path $bin "sortbench.exe"
 $api = Join-Path $bin "brainsort_api_bench.exe"
 $id = if ($env:BENCH_ID) { $env:BENCH_ID } else { (& $sb --print-id).Trim() }
 $sizes = @()
-foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "1000 10000 100000 1000000" }) -split " ")) { $sizes += @("--n", $n) }
+foreach ($n in ($(if ($env:BENCH_SIZES) { $env:BENCH_SIZES } else { "1000 10000 100000 1000000 10000000" }) -split " ")) { $sizes += @("--n", $n) }
 $hostText = if ($env:BENCH_HOST) { $env:BENCH_HOST } else { "" }
 $apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "10000000" }
 New-Item -ItemType Directory -Force results | Out-Null

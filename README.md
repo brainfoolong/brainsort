@@ -49,7 +49,7 @@ whole contract is under [The library](#the-library).
 Measured against the upstream code as it ships (libstdc++ `std::sort` and
 `std::stable_sort`, Orson Peters' `pdqsort.h` in both forms, the gfx C++ port
 of TimSort) and against our own instrumented ports, on four key types (int32,
-double, int64, string) and twelve input patterns, at 1,000 to 1,000,000
+double, int64, string) and twelve input patterns, at 1,000 to 10,000,000
 elements.
 
 The table below is deterministic: it counts what each algorithm does, not how
