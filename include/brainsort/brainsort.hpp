@@ -61,6 +61,10 @@ namespace detail {
 // Below this many elements the elements themselves are insertion sorted by
 // key: no allocation, and cheaper than building records.
 constexpr size_t kSmallSort = 32;
+// Elements up to this size are sorted in place on nearly sorted input; larger
+// ones through the records, where moving only the out-of-place elements is
+// cheaper than rewriting every element once.
+constexpr size_t kElementRouteMax = 16;
 
 // An array of n objects of type U in memory from Alloc. For trivially
 // constructible U it is raw storage; otherwise objects are constructed one
@@ -122,10 +126,18 @@ inline void permute_cycles(It first, Rec* rec, size_t n) {
 
 // The same through a gather buffer: sequential writes and independent loads,
 // which is faster for trivially copyable elements. Falls back to the cycle
-// walk if the buffer cannot be allocated.
+// walk if the buffer cannot be allocated. When the input was nearly sorted
+// (`sparse`), most elements are already in their final place and the cycle
+// walk moves only the others, so it is taken if at most an eighth are out
+// of place.
 template <class Alloc, class It, class Rec>
-inline void permute(It first, Rec* rec, size_t n) {
+inline void permute(It first, Rec* rec, size_t n, bool sparse) {
     using T = std::iter_value_t<It>;
+    if (sparse) {
+        size_t moved = 0;
+        for (size_t i = 0; i < n; ++i) moved += index_of(rec[i]) != i;
+        if (moved <= n / 8) { permute_cycles(first, rec, n); return; }
+    }
     if constexpr (std::is_trivially_copyable_v<T> && alignof(T) <= alignof(std::max_align_t)) {
         try {
             Buf<T, Alloc> tmp(n);
@@ -154,31 +166,130 @@ private:
     static auto store(R&& r) { if constexpr (by_ref) return &static_cast<const K&>(r); else return K(static_cast<R&&>(r)); }
 };
 
-// Already sorted or reversed input, recognised on the elements before any
-// record is built or memory allocated: one pass that stops at the first pair
-// that rules both out (a few elements into unordered input). Returns true if
-// the range is sorted on return. Reversed input (non-increasing) is reversed
-// in place with each group of equal keys put back into input order, so the
-// result is stable; the groups are found in a scan that runs before anything
-// moves, so a projection that throws leaves the range unchanged.
-template <class It, class Proj>
-inline bool sort_if_monotone(It first, size_t n, Proj& proj) {
-    using K = key_of_t<It, Proj>;
-    size_t desc = 0, asc = 0;
-    {
-        KeyHolder<It, Proj> prev(std::invoke(proj, first[0]));
-        for (size_t i = 1; i < n; ++i) {
-            KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]));
-            const int c = compare_keys<false, K>(prev.get(), cur.get());
-            desc += c > 0;
-            asc  += c < 0;
-            if (desc != 0 && asc != 0) return false;
-            prev = std::move(cur);
+// Compare two keys in the order the records would sort them. Floating-point
+// keys are compared as values: the same order as their radix form except for
+// NaN, which is flagged so the caller can leave such input to the records.
+template <class K>
+BRAINSORT_ALWAYS_INLINE int scan_compare(const K& a, const K& b, bool& nan) {
+    if constexpr (std::is_floating_point_v<K>) {
+        nan |= (a != a) | (b != b);
+        return a < b ? -1 : (b < a ? 1 : 0);
+    } else {
+        return compare_keys<false, K>(a, b);
+    }
+}
+
+// What one pass over the keys found, before any record is built or memory
+// allocated. The pass counts descents and ascents and stops as soon as the
+// counts prove the input unordered (a few hundred elements into random
+// input), so an expensive projection is called few times on such input.
+enum class Shape : int { unordered, sorted, reversed, nearly_sorted };
+struct Prescan {
+    Shape  shape    = Shape::unordered;
+    size_t descents = 0;
+    size_t ascents  = 0;
+};
+constexpr size_t kPrescanBlock = 256;
+
+// A plain array of 32- or 64-bit numbers: eight or four elements per vector
+// compared against their predecessors, the compare bits counted; NaN is
+// flagged from the vector compare too.
+template <class K> constexpr bool vector_prescan_v =
+    std::is_same_v<K, int32_t> || std::is_same_v<K, uint32_t> || std::is_same_v<K, int64_t> ||
+    std::is_same_v<K, uint64_t> || std::is_same_v<K, float> || std::is_same_v<K, double>;
+#ifdef BRAINSORT_X86_64
+template <class K> BRAINSORT_TARGET_AVX2 inline __m256i vld(const K* q) { return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(q)); }
+template <class K> BRAINSORT_TARGET_AVX2 inline unsigned vgt(__m256i x, __m256i y) {   // bit e set where element e of x > of y
+    if constexpr (std::is_same_v<K, float>)
+        return static_cast<unsigned>(_mm256_movemask_ps(_mm256_cmp_ps(_mm256_castsi256_ps(x), _mm256_castsi256_ps(y), _CMP_GT_OQ)));
+    else if constexpr (std::is_same_v<K, double>)
+        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_cmp_pd(_mm256_castsi256_pd(x), _mm256_castsi256_pd(y), _CMP_GT_OQ)));
+    else if constexpr (sizeof(K) == 4) {
+        if constexpr (std::is_unsigned_v<K>) { const __m256i s = _mm256_set1_epi32(INT32_MIN); x = _mm256_xor_si256(x, s); y = _mm256_xor_si256(y, s); }
+        return static_cast<unsigned>(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(x, y))));
+    } else {
+        if constexpr (std::is_unsigned_v<K>) { const __m256i s = _mm256_set1_epi64x(INT64_MIN); x = _mm256_xor_si256(x, s); y = _mm256_xor_si256(y, s); }
+        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(_mm256_cmpgt_epi64(x, y))));
+    }
+}
+template <class K> BRAINSORT_TARGET_AVX2 inline bool vnan(__m256i x) {
+    if constexpr (std::is_same_v<K, float>) return _mm256_movemask_ps(_mm256_cmp_ps(_mm256_castsi256_ps(x), _mm256_castsi256_ps(x), _CMP_UNORD_Q)) != 0;
+    else if constexpr (std::is_same_v<K, double>) return _mm256_movemask_pd(_mm256_cmp_pd(_mm256_castsi256_pd(x), _mm256_castsi256_pd(x), _CMP_UNORD_Q)) != 0;
+    else return false;
+}
+template <class K>
+BRAINSORT_TARGET_AVX2 inline Prescan prescan_avx2(const K* p, size_t n) {
+    constexpr size_t V = 32 / sizeof(K);
+    Prescan r;
+    size_t desc = 0, asc = 0, i = 1, next_check = kPrescanBlock;
+    bool   nan = false;
+    if constexpr (std::is_floating_point_v<K>) nan = p[0] != p[0];
+    for (; i + V <= n; i += V) {
+        const __m256i cur = vld(p + i), prev = vld(p + i - 1);
+        desc += static_cast<size_t>(std::popcount(vgt<K>(prev, cur)));
+        asc  += static_cast<size_t>(std::popcount(vgt<K>(cur, prev)));
+        nan |= vnan<K>(cur);
+        if (i >= next_check) {
+            next_check += kPrescanBlock;
+            if (asc > 0 && desc > (i >> 3) + 64) return r;
         }
     }
-    if (desc == 0) return true;   // non-decreasing: nothing to do
-    // Non-increasing: reverse the whole range, then each tie group back.
+    for (; i < n; ++i) {
+        const int c = scan_compare<K>(p[i - 1], p[i], nan);
+        desc += c > 0;
+        asc  += c < 0;
+    }
+    if (nan) return r;
+    r.descents = desc;
+    r.ascents  = asc;
+    if (desc == 0) r.shape = Shape::sorted;
+    else if (asc == 0) r.shape = Shape::reversed;
+    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+    return r;
+}
+#endif
+
+template <class It, class Proj>
+inline Prescan prescan(It first, size_t n, Proj& proj) {
+    using K = key_of_t<It, Proj>;
+#ifdef BRAINSORT_X86_64
+    if constexpr (std::is_same_v<Proj, std::identity> && std::contiguous_iterator<It> && vector_prescan_v<K>) {
+        if (have_avx2()) return prescan_avx2<K>(std::to_address(first), n);
+    }
+#endif
+    Prescan r;
+    size_t desc = 0, asc = 0;
+    bool   nan = false;
+    KeyHolder<It, Proj> prev(std::invoke(proj, first[0]));
+    for (size_t i = 1; i < n; ++i) {
+        KeyHolder<It, Proj> cur(std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]));
+        const int c = scan_compare<K>(prev.get(), cur.get(), nan);
+        desc += c > 0;
+        asc  += c < 0;
+        prev = std::move(cur);
+        // Unordered for certain: the displaced-element route gives up once
+        // the displaced elements exceed scanned/8 + 64, and every descent
+        // displaces at least one element.
+        if ((i & (kPrescanBlock - 1)) == 0 && asc > 0 && desc > (i >> 3) + 64) return r;
+    }
+    if (nan) return r;   // NaN: the records know its place, the value compare does not
+    r.descents = desc;
+    r.ascents  = asc;
+    if (desc == 0) r.shape = Shape::sorted;
+    else if (asc == 0) r.shape = Shape::reversed;
+    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+    return r;
+}
+
+// Reverse a non-increasing range in place with each group of equal keys put
+// back into input order, so the result is stable. Strictly decreasing input
+// (every pair a descent) has no groups.
+template <class It, class Proj>
+inline void reverse_stable(It first, size_t n, Proj& proj, const Prescan& s) {
+    using K = key_of_t<It, Proj>;
     std::reverse(first, first + static_cast<std::ptrdiff_t>(n));
+    if (s.descents == n - 1) return;
+    bool   nan = false;
     size_t i = 0;
     while (i < n) {
         size_t j = i + 1;
@@ -186,14 +297,58 @@ inline bool sort_if_monotone(It first, size_t n, Proj& proj) {
             KeyHolder<It, Proj> ki(std::invoke(proj, first[static_cast<std::ptrdiff_t>(i)]));
             while (j < n) {
                 KeyHolder<It, Proj> kj(std::invoke(proj, first[static_cast<std::ptrdiff_t>(j)]));
-                if (compare_keys<false, K>(ki.get(), kj.get()) != 0) break;
+                if (scan_compare<K>(ki.get(), kj.get(), nan) != 0) break;
                 ++j;
             }
         }
         if (j - i > 1) std::reverse(first + static_cast<std::ptrdiff_t>(i), first + static_cast<std::ptrdiff_t>(j));
         i = j;
     }
-    return true;
+}
+
+// The elements themselves as the array the core's displaced-element route
+// sorts, for nearly sorted input: no records, no permutation, the few
+// displaced elements are pulled out, sorted and merged back in place.
+// Trivially copyable elements behind a contiguous iterator only.
+template <class T, class Proj, class Alloc>
+class ElemView {
+public:
+    using value_type = T;
+    using hooks      = NoHooks;
+    using alloc      = Alloc;
+    static constexpr bool counted = false;
+    ElemView(T* p, size_t n, Proj* proj) : p_(p), n_(n), proj_(proj) {}
+    size_t size() const noexcept { return n_; }
+    T*     data() const noexcept { return p_; }
+    T      get(size_t i) const { return p_[i]; }
+    void   set(size_t i, const T& v) const { p_[i] = v; }
+    bool   less(const T& a, const T& b) const { return compare(a, b) < 0; }
+    int    compare(const T& a, const T& b) const {
+        using K = std::remove_cvref_t<std::invoke_result_t<Proj&, const T&>>;
+        bool nan = false;
+        return scan_compare<K>(std::invoke(*proj_, a), std::invoke(*proj_, b), nan);
+    }
+    template <class U> static U* alloc_array(size_t n) { return static_cast<U*>(Alloc::allocate(n * sizeof(U))); }
+    template <class U> static void free_array(U* p, size_t n) noexcept { Alloc::deallocate(p, n * sizeof(U)); }
+private:
+    T*     p_;
+    size_t n_;
+    Proj*  proj_;
+};
+
+template <class Alloc, class It, class Proj>
+inline bool sort_displaced_elements(It first, size_t n, Proj& proj) {
+    using T = std::iter_value_t<It>;
+    if constexpr (std::contiguous_iterator<It> && std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>) {
+        try {
+            return brain_detail::sort_displaced(ElemView<T, Proj, Alloc>(std::to_address(first), n, &proj), n);
+        } catch (const std::bad_alloc&) {
+            return false;   // nothing was moved: the route restores the range before it gives up
+        }
+    } else {
+        (void)first; (void)n; (void)proj;
+        return false;
+    }
 }
 
 template <class It, class Proj, class Less>
@@ -213,7 +368,7 @@ inline void small_sort(It first, size_t n, Less& less) {
 // Sort [first, last) by proj(element), through records of type Rec. Returns
 // false, with the range untouched, if the keys could not be represented.
 template <class Alloc, class It, class Proj>
-inline bool sort_records(It first, size_t n, Proj& proj) {
+inline bool sort_records(It first, size_t n, Proj& proj, bool sparse) {
     using T   = std::iter_value_t<It>;
     using R   = proj_result_t<It, Proj>;
     using K   = key_of_t<It, Proj>;
@@ -240,7 +395,7 @@ inline bool sort_records(It first, size_t n, Proj& proj) {
                   (std::is_same_v<Rec, Rec32> || std::is_same_v<Rec, Rec64>)) {
         for (size_t i = 0; i < n; ++i) first[static_cast<std::ptrdiff_t>(i)] = key_of<K>(rec[i]);
     } else {
-        permute<Alloc>(first, rec, n);
+        permute<Alloc>(first, rec, n, sparse);
     }
     return true;
 }
@@ -273,11 +428,21 @@ inline void sort_by_key_impl(It first, It last, Proj proj) {
     // Element types whose moves may throw cannot be permuted safely in
     // place; ranges too long for 32-bit indices cannot be recorded.
     constexpr bool safe_moves = std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T>;
-    if (safe_moves && sort_if_monotone(first, n, proj)) return;
+    bool nearly = false;
+    if (safe_moves) {
+        const Prescan s = prescan(first, n, proj);
+        if (s.shape == Shape::sorted) return;
+        if (s.shape == Shape::reversed) { reverse_stable(first, n, proj, s); return; }
+        nearly = s.shape == Shape::nearly_sorted;
+        // Small elements are sorted in place by the displaced-element route;
+        // large ones go through the records and a sparse permutation, which
+        // moves only the elements that are out of place.
+        if (nearly && sizeof(T) <= kElementRouteMax && sort_displaced_elements<Alloc>(first, n, proj)) return;
+    }
     if (safe_moves && n <= 0xFFFFFFFFull && n <= (~size_t(0)) / sizeof(record_t<K>) / 4) {
         bool done = false;
         try {
-            done = sort_records<Alloc>(first, n, proj);
+            done = sort_records<Alloc>(first, n, proj, nearly);
         } catch (const std::bad_alloc&) {
             done = false;   // the range is untouched: sort it by comparison instead
         }
@@ -342,9 +507,8 @@ inline void sort(R&& r, F f) {
     sort(std::ranges::begin(r), std::ranges::end(r), std::move(f));
 }
 
-// Free the memory this thread's sorts keep for reuse (see
-// BRAINSORT_MEMORY_CACHE in detail/traits.hpp). Never needed for
-// correctness; the memory is released when the thread ends.
+// Free the blocks the library keeps for reuse (see BRAINSORT_MEMORY_CACHE in
+// detail/traits.hpp). Never needed for correctness.
 inline void release_memory() noexcept { detail::memory_cache().release(); }
 
 // The same names as the standard library, for a drop-in replacement: every

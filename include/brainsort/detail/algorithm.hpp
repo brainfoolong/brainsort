@@ -632,9 +632,22 @@ inline bool sort_displaced(A a, size_t n) {
 
     // Sort the displaced elements by (key, original position): a stable
     // bottom-up merge sort of an index array (positions break ties, so the
-    // input order of the index array does not matter).
-    AuxVec<uint32_t, A> idx_buf(2 * nd);
-    auto idx = idx_buf.view();
+    // input order of the index array does not matter). If the index array
+    // cannot be allocated the route gives up like it does on too many
+    // displaced elements: the array is restored, nothing is lost.
+    struct IdxBuf {
+        uint32_t* p = nullptr;
+        size_t    n = 0;
+        ~IdxBuf() { if (p) A::template free_array<uint32_t>(p, n); }
+    } idx_buf;
+    try {
+        idx_buf.p = A::template alloc_array<uint32_t>(2 * nd);
+        idx_buf.n = 2 * nd;
+    } catch (const std::bad_alloc&) {
+        restore_displaced(a, disp, nd, nk, n);
+        return false;
+    }
+    const typename AuxVec<uint32_t, A>::View idx{idx_buf.p, 2 * nd};
     for (size_t t = 0; t < nd; ++t) idx.set(t, static_cast<uint32_t>(t));
     {
         size_t src = 0, dst = nd;   // halves of idx_buf
