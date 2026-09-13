@@ -1,5 +1,7 @@
 # brainsort
 
+[![CI](https://github.com/BrainFooLong/brainsort/actions/workflows/ci.yml/badge.svg)](https://github.com/BrainFooLong/brainsort/actions/workflows/ci.yml)
+
 A stable sorting algorithm for keys that map to an ordered integer: numbers,
 strings, dates, ids. It avoids comparing keys wherever the key type allows it
 and does less work when the input already has structure. Header-only C++20,

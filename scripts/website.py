@@ -430,6 +430,8 @@ header { padding: 52px 0 12px; }
 .topline { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
 .badge { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); background: var(--card); }
 .badge.accent { background: var(--accent-soft); color: var(--accent-ink); border-color: transparent; }
+.topline .ci { display: inline-flex; line-height: 0; }
+.topline .ci img { height: 20px; }
 .links { display: flex; flex-wrap: wrap; gap: 8px 10px; margin: 22px 0 0; }
 .links a { font-size: 14px; font-weight: 500; text-decoration: none; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
 .links a:hover { border-color: var(--accent); color: var(--accent); }
@@ -588,7 +590,7 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
 <body>
 <main>
 <header>
-  <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><span class="badge">header-only C++20</span></div>
+  <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><span class="badge">header-only C++20</span><a class="ci" id="ci-badge" href="#"><img alt="CI status" src=""></a></div>
   <p class="lead">A stable sorting algorithm for keys that map to an ordered integer: numbers, strings, dates, ids. Measured against the sorts that ship in today's standard libraries, on the same inputs, the same compiler flags and the same machines.</p>
   <div class="links" id="links"></div>
   <p class="stamp" id="stamp"></p>
@@ -1087,6 +1089,9 @@ function renderHeader() {
   document.getElementById('links').innerHTML =
     `<a href="${esc(DATA.repo)}">Source and README</a><a href="${esc(DATA.repo)}/blob/main/single_include/brainsort.hpp">Single header</a>` +
     `<a href="${esc(DATA.repo)}/blob/main/setup.md">Build, test, reproduce</a><a href="${esc(DATA.repo)}/tree/main/results">Raw data (CSV)</a>`;
+  const ci = document.getElementById('ci-badge');
+  ci.href = `${DATA.repo}/actions/workflows/ci.yml`;
+  ci.firstElementChild.src = `${DATA.repo}/actions/workflows/ci.yml/badge.svg`;
   document.getElementById('link-setup').href = `${DATA.repo}/blob/main/setup.md`;
   document.getElementById('link-header').href = `${DATA.repo}/blob/main/single_include/brainsort.hpp`;
   document.getElementById('link-readme').href = `${DATA.repo}#the-library`;
