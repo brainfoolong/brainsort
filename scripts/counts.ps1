@@ -23,7 +23,7 @@ $out = if ($env:COUNTS_OUT) { $env:COUNTS_OUT }
 $sizes = @()
 foreach ($n in ($sizesList -split " ")) { $sizes += @("--n", $n) }
 New-Item -ItemType Directory -Force results | Out-Null
-& (Join-Path $bin "sortbench.exe") --counts-only --all-types --all-algos --all-datasets @sizes --csv $out @args
+& (Join-Path $bin "sortbench.exe") --counts-only --all-types --all-datasets @sizes --csv $out @args
 if ($LASTEXITCODE -ne 0) { throw "counts run failed" }
 if (-not $env:COUNTS_NO_RUST -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $rustOut = $out -replace "results\\counts", "results\rust-counts"

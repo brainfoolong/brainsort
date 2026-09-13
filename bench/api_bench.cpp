@@ -1,6 +1,6 @@
-// The public API against the standard library and pdqsort, on plain
-// containers: what a user of brainsort::sort gets, including the cost of
-// building the records and permuting the elements.
+// The public API against the stable sorts that ship, on plain containers:
+// what a user of brainsort::sort gets, including the cost of building the
+// records and permuting the elements.
 //
 //   brainsort_api_bench                 n = 10, 100, 100k and 1M, 5 repetitions
 //   brainsort_api_bench --quick         n = 10, 100 and 100k, 3 repetitions (the CI smoke run)
@@ -9,15 +9,19 @@
 //
 // Prints a Markdown document: a line for humans, the run stamp of
 // sortbench/stamp.hpp as an HTML comment (scripts/website.py reads it), then
-// one table: median wall time in ms of one sort for brainsort::sort,
-// std::sort, std::stable_sort and pdqsort (the branchless partition for
-// arithmetic keys, as pdqsort.h selects on its own) per element type,
-// dataset and size (below 100,000 elements, ceil(100,000/n) copies are
-// sorted back to back and the time divided), and the ratio of brainsort to
-// the fastest of the others. The last
-// rows call brainsort::sort with a comparator, its comparison sort.
+// one table: median wall time in ms of one sort for brainsort::sort and the
+// opponents (the header row names them; scripts/website.py takes them from
+// there) per element type, dataset and size (below 100,000 elements,
+// ceil(100,000/n) copies are sorted back to back and the time divided), and
+// the ratio of brainsort to the fastest of the others. The last rows call
+// brainsort::sort with a comparator, its comparison sort.
+//
+// The opponents are the sorts that can do what brainsort does, as shipped:
+// stable, every key type, an arbitrary comparator (docs/decisions/0017.md).
 #include "brainsort/brainsort.hpp"
-#include "pdqsort/pdqsort.h"
+#include "boost/sort/flat_stable_sort/flat_stable_sort.hpp"
+#include "boost/sort/spinsort/spinsort.hpp"
+#include "gfx/timsort.hpp"
 #include "sortbench/stamp.hpp"
 
 #include <algorithm>
@@ -95,6 +99,20 @@ template <> struct Less<Row> {
     bool operator()(const Row& a, const Row& b) const { return a.key < b.key; }
 };
 
+// The opponents, in the order of the table's columns. Each is called as an
+// application would call it, with the same comparator.
+constexpr const char* kOpponents[] = {"std::stable_sort", "gfx::timsort", "boost::spinsort", "boost::flat_stable_sort"};
+constexpr size_t kOpponentCount = sizeof kOpponents / sizeof kOpponents[0];
+template <class T>
+void run_opponent(size_t i, std::vector<T>& v) {
+    switch (i) {
+        case 0: std::stable_sort(v.begin(), v.end(), Less<T>{}); break;
+        case 1: gfx::timsort(v.begin(), v.end(), Less<T>{}); break;
+        case 2: boost::sort::spinsort(v.begin(), v.end(), Less<T>{}); break;
+        default: boost::sort::flat_stable_sort(v.begin(), v.end(), Less<T>{}); break;
+    }
+}
+
 // The size the repetition scheme is defined at: below it, batch_for(n)
 // independent copies are sorted back to back in one timed region and the
 // time per sort is reported, so that ten elements are not timed as one call
@@ -144,15 +162,15 @@ void bench_type(const std::vector<size_t>& sizes, int reps, bool comparator = fa
                 else if constexpr (std::is_same_v<T, Row>) brainsort::sort(v, [](const Row& r) { return r.key; });
                 else brainsort::sort(v);
             });
-            const double ss = median_ms(in, reps, [](std::vector<T>& v) { std::sort(v.begin(), v.end(), Less<T>{}); });
-            const double st = median_ms(in, reps, [](std::vector<T>& v) { std::stable_sort(v.begin(), v.end(), Less<T>{}); });
-            const double pd = median_ms(in, reps, [](std::vector<T>& v) {
-                if constexpr (std::is_arithmetic_v<T>) pdqsort_branchless(v.begin(), v.end());
-                else pdqsort(v.begin(), v.end(), Less<T>{});
-            });
-            const double best = std::min({ss, st, pd});
-            std::printf("| %s%s | %zu | %s | %s | %s | %s | %s | %.2fx |\n", Gen<T>::name(), comparator ? " by comparator" : "", n, ds,
-                        fmt_ms(bs).c_str(), fmt_ms(ss).c_str(), fmt_ms(st).c_str(), fmt_ms(pd).c_str(), best / bs);
+            double best = 1e300;
+            std::string cells;
+            for (size_t i = 0; i < kOpponentCount; ++i) {
+                const double ms = median_ms(in, reps, [i](std::vector<T>& v) { run_opponent(i, v); });
+                best = std::min(best, ms);
+                cells += " " + fmt_ms(ms) + " |";
+            }
+            std::printf("| %s%s | %zu | %s | %s |%s %.2fx |\n", Gen<T>::name(), comparator ? " by comparator" : "", n, ds,
+                        fmt_ms(bs).c_str(), cells.c_str(), best / bs);
             std::fflush(stdout);
         }
     }
@@ -176,11 +194,16 @@ int main(int argc, char** argv) {
         if (n <= max_n && (!quick || n <= 100000)) sizes.push_back(n);
     const int reps = quick ? 3 : 5;
     const sb::RunStamp stamp = sb::RunStamp::now();
-    std::printf("%s%s. brainsort::sort on a plain std::vector against std::sort, std::stable_sort and pdqsort; median of %d runs, wall ms per sort (below 100,000 elements, ceil(100,000/n) copies are sorted back to back). Generated by brainsort_api_bench.\n",
-                stamp.summary().c_str(), host.empty() ? "" : (", " + host).c_str(), reps);
+    std::string names;
+    for (size_t i = 0; i < kOpponentCount; ++i) names += std::string(i ? ", " : "") + kOpponents[i];
+    std::printf("%s%s. brainsort::sort on a plain std::vector against %s; median of %d runs, wall ms per sort (below 100,000 elements, ceil(100,000/n) copies are sorted back to back). Generated by brainsort_api_bench.\n",
+                stamp.summary().c_str(), host.empty() ? "" : (", " + host).c_str(), names.c_str(), reps);
     std::printf("<!-- stamp {\n  \"host\": %s,\n%s,\n  \"reps\": %d\n} -->\n\n", sb::json_str(host).c_str(), stamp.json_fields().c_str(), reps);
-    std::printf("| type | n | dataset | brainsort::sort | std::sort | std::stable_sort | pdqsort | vs best |\n");
-    std::printf("|---|---:|---|---:|---:|---:|---:|---:|\n");
+    std::printf("| type | n | dataset | brainsort::sort |");
+    for (const char* o : kOpponents) std::printf(" %s |", o);
+    std::printf(" vs best |\n|---|---:|---|---:|");
+    for (size_t i = 0; i < kOpponentCount; ++i) std::printf("---:|");
+    std::printf("---:|\n");
     std::fflush(stdout);
     bench_type<int32_t>(sizes, reps);
     bench_type<int64_t>(sizes, reps);

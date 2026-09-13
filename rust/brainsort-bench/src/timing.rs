@@ -5,10 +5,12 @@
 //! two languages can be compared cell by cell on one machine.
 //!
 //! Opponents, as shipped: `slice::sort` (the standard library's stable
-//! sort, driftsort), `slice::sort_unstable` (ipnsort), and the radix crates
-//! `radsort` (stable), `voracious_radix_sort` (stable and unstable) and
-//! `rdst` (unstable, single-threaded here) where they support the key type.
-//! Every result is checked.
+//! sort, driftsort), `slice::sort_by_cached_key` (the same sort on a
+//! buffer of keys and indices, the standard library's route for a sort by
+//! key; not on strings, whose key would be the string itself) and the
+//! `glidesort` crate. Every one is stable, sorts every key type and takes
+//! a comparator: the sorts that can do what brainsort does
+//! (docs/decisions/0017.md). Every result is checked.
 use crate::datasets::Mt19937_64;
 use std::time::Instant;
 
@@ -26,13 +28,6 @@ impl Default for Row {
 }
 // SAFETY: an i64 and 56 bytes, no padding.
 unsafe impl brainsort::PlainBytes for Row {}
-impl rdst::RadixKey for Row {
-    const LEVELS: usize = 8;
-    #[inline]
-    fn get_level(&self, level: usize) -> u8 {
-        self.key.get_level(level)
-    }
-}
 
 /// The input generators of the C++ API benchmark: `random()` a full-entropy
 /// key, `from(v)` a key monotone in v. Doubles use the harness's own
@@ -174,40 +169,74 @@ pub struct Cell {
     pub brainsort: f64,
     pub others: Vec<Option<f64>>,
 }
-pub const OPPONENTS: [&str; 6] = ["std sort (stable)", "std sort_unstable", "radsort", "voracious stable", "voracious unstable", "rdst"];
+pub const OPPONENTS: [&str; 3] = ["slice::sort", "slice::sort_by_cached_key", "glidesort"];
 
-/// A type's opponents: which of the six apply and how to call them.
+/// An f64 with the `Ord` a program gives it to sort by cached key:
+/// `total_cmp`, the natural order on inputs without NaN or negative zero.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Total(u64);
+impl Total {
+    #[inline]
+    fn of(v: f64) -> Self {
+        let b = v.to_bits();
+        Total(b ^ (((b as i64 >> 63) as u64) | (1u64 << 63)))
+    }
+}
+
+/// A type's opponents: which of the three apply and how to call them.
 pub trait Opponents: BenchKey {
     fn brainsort(v: &mut Vec<Self>);
     fn std_stable(v: &mut Vec<Self>);
-    fn std_unstable(v: &mut Vec<Self>);
-    fn radsort(_v: &mut Vec<Self>) -> bool {
+    fn std_cached_key(_v: &mut Vec<Self>) -> bool {
         false
     }
-    fn voracious_stable(_v: &mut Vec<Self>) -> bool {
-        false
+    fn glidesort(v: &mut Vec<Self>);
+}
+impl Opponents for i32 {
+    fn brainsort(v: &mut Vec<Self>) {
+        brainsort::sort(v)
     }
-    fn voracious_unstable(_v: &mut Vec<Self>) -> bool {
-        false
+    fn std_stable(v: &mut Vec<Self>) {
+        v.sort()
     }
-    fn rdst(_v: &mut Vec<Self>) -> bool {
-        false
+    fn std_cached_key(v: &mut Vec<Self>) -> bool {
+        v.sort_by_cached_key(|&x| x);
+        true
+    }
+    fn glidesort(v: &mut Vec<Self>) {
+        glidesort::sort(v)
     }
 }
-macro_rules! scalar_opponents {
-    ($($t:ty),*) => {$(
-        impl Opponents for $t {
-            fn brainsort(v: &mut Vec<Self>) { brainsort::sort(v) }
-            fn std_stable(v: &mut Vec<Self>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap()) }
-            fn std_unstable(v: &mut Vec<Self>) { v.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap()) }
-            fn radsort(v: &mut Vec<Self>) -> bool { radsort::sort(v); true }
-            fn voracious_stable(v: &mut Vec<Self>) -> bool { use voracious_radix_sort::RadixSort; v.voracious_stable_sort(); true }
-            fn voracious_unstable(v: &mut Vec<Self>) -> bool { use voracious_radix_sort::RadixSort; v.voracious_sort(); true }
-            fn rdst(v: &mut Vec<Self>) -> bool { use rdst::RadixSort; v.radix_sort_builder().with_single_threaded_tuner().with_parallel(false).sort(); true }
-        }
-    )*};
+impl Opponents for i64 {
+    fn brainsort(v: &mut Vec<Self>) {
+        brainsort::sort(v)
+    }
+    fn std_stable(v: &mut Vec<Self>) {
+        v.sort()
+    }
+    fn std_cached_key(v: &mut Vec<Self>) -> bool {
+        v.sort_by_cached_key(|&x| x);
+        true
+    }
+    fn glidesort(v: &mut Vec<Self>) {
+        glidesort::sort(v)
+    }
 }
-scalar_opponents!(i32, i64, f64);
+impl Opponents for f64 {
+    fn brainsort(v: &mut Vec<Self>) {
+        brainsort::sort(v)
+    }
+    fn std_stable(v: &mut Vec<Self>) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap())
+    }
+    fn std_cached_key(v: &mut Vec<Self>) -> bool {
+        v.sort_by_cached_key(|&x| Total::of(x));
+        true
+    }
+    fn glidesort(v: &mut Vec<Self>) {
+        glidesort::sort_by(v, |a, b| a.partial_cmp(b).unwrap())
+    }
+}
 impl Opponents for String {
     fn brainsort(v: &mut Vec<Self>) {
         brainsort::sort(v)
@@ -215,8 +244,8 @@ impl Opponents for String {
     fn std_stable(v: &mut Vec<Self>) {
         v.sort()
     }
-    fn std_unstable(v: &mut Vec<Self>) {
-        v.sort_unstable()
+    fn glidesort(v: &mut Vec<Self>) {
+        glidesort::sort(v)
     }
 }
 impl Opponents for Row {
@@ -226,17 +255,12 @@ impl Opponents for Row {
     fn std_stable(v: &mut Vec<Self>) {
         v.sort_by_key(|r| r.key)
     }
-    fn std_unstable(v: &mut Vec<Self>) {
-        v.sort_unstable_by_key(|r| r.key)
-    }
-    fn radsort(v: &mut Vec<Self>) -> bool {
-        radsort::sort_by_key(v, |r| r.key);
+    fn std_cached_key(v: &mut Vec<Self>) -> bool {
+        v.sort_by_cached_key(|r| r.key);
         true
     }
-    fn rdst(v: &mut Vec<Self>) -> bool {
-        use rdst::RadixSort;
-        v.radix_sort_builder().with_single_threaded_tuner().with_parallel(false).sort();
-        true
+    fn glidesort(v: &mut Vec<Self>) {
+        glidesort::sort_by_key(v, |r| r.key)
     }
 }
 
@@ -248,19 +272,14 @@ fn bench_type<T: Opponents>(sizes: &[usize], reps: usize, out: &mut Vec<Cell>, m
         for ds in DATASETS {
             let input = make::<T>(ds, n, 20260912);
             let bs = median_ms(&input, reps, T::brainsort);
-            let mut others = vec![Some(median_ms(&input, reps, T::std_stable)), Some(median_ms(&input, reps, T::std_unstable)), None, None, None, None];
-            let mut probe = |i: usize, f: fn(&mut Vec<T>) -> bool| {
-                let mut w = input.clone();
-                if f(&mut w) {
-                    others[i] = Some(median_ms(&input, reps, |v| {
-                        f(v);
-                    }));
-                }
-            };
-            probe(2, T::radsort);
-            probe(3, T::voracious_stable);
-            probe(4, T::voracious_unstable);
-            probe(5, T::rdst);
+            let mut others = vec![Some(median_ms(&input, reps, T::std_stable)), None, None];
+            let mut w = input.clone();
+            if T::std_cached_key(&mut w) {
+                others[1] = Some(median_ms(&input, reps, |v| {
+                    T::std_cached_key(v);
+                }));
+            }
+            others[2] = Some(median_ms(&input, reps, T::glidesort));
             let cell = Cell { ty: T::NAME, n, ds, brainsort: bs, others };
             log(&cell);
             out.push(cell);
@@ -269,8 +288,9 @@ fn bench_type<T: Opponents>(sizes: &[usize], reps: usize, out: &mut Vec<Cell>, m
 }
 
 /// A comparator on the elements: brainsort's `sort_by`, or with `infer`
-/// its `sort_by_inferred`, against the standard library's two comparator
-/// sorts.
+/// its `sort_by_inferred`, against the comparator sorts of the pool
+/// (`slice::sort_by` and `glidesort::sort_by`; a cached key is not a
+/// comparator).
 fn bench_comparator<T: BenchKey + brainsort::PlainBytes>(name: &'static str, infer: bool, sizes: &[usize], reps: usize, out: &mut Vec<Cell>, mut log: impl FnMut(&Cell)) {
     for &n in sizes {
         if name.starts_with("64-byte") && n > 1_000_000 {
@@ -289,8 +309,8 @@ fn bench_comparator<T: BenchKey + brainsort::PlainBytes>(name: &'static str, inf
             };
             let bs = if infer { median_ms(&input, reps, |v| brainsort::sort_by_inferred(v, cmp)) } else { median_ms(&input, reps, |v| brainsort::sort_by(v, cmp)) };
             let ss = median_ms(&input, reps, |v| v.sort_by(cmp));
-            let su = median_ms(&input, reps, |v| v.sort_unstable_by(cmp));
-            let cell = Cell { ty: name, n, ds, brainsort: bs, others: vec![Some(ss), Some(su), None, None, None, None] };
+            let gs = median_ms(&input, reps, |v| glidesort::sort_by(v, cmp));
+            let cell = Cell { ty: name, n, ds, brainsort: bs, others: vec![Some(ss), None, Some(gs)] };
             log(&cell);
             out.push(cell);
         }

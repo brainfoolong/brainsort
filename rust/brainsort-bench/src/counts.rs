@@ -1,13 +1,17 @@
 //! The deterministic numbers of the Rust sorts as shipped: everything that
-//! can be counted of `slice::sort`, `slice::sort_unstable`, radsort,
-//! voracious_radix_sort and rdst without touching their code. A comparison
-//! sort shows its comparisons through the comparator it is given, a radix
-//! crate its key reads through the key trait it asks for, and every sort
-//! its scratch memory through the global allocator. What cannot be
-//! observed is an element move: a Rust move is a plain copy with no hook,
-//! so bytes moved, reads, writes and the cache model exist only for
-//! brainsort, in `results/counts.csv`, and the golden test holds the crate
-//! to them.
+//! can be counted of `slice::sort`, `slice::sort_by_cached_key` and
+//! glidesort without touching their code. A comparison sort shows its
+//! comparisons through the comparator it is given (the cached-key sort
+//! through the `Ord` of the key it caches), the cached-key sort its key
+//! reads through the key function, and every sort its scratch memory
+//! through the global allocator. What cannot be observed is an element
+//! move: a Rust move is a plain copy with no hook, so bytes moved, reads,
+//! writes and the cache model exist only for brainsort, in
+//! `results/counts.csv`, and the golden test holds the crate to them.
+//!
+//! The opponents are the Rust sorts that can do what brainsort does, as
+//! shipped: stable, every key type, an arbitrary comparator
+//! (docs/decisions/0017.md).
 //!
 //! One row per (key type, input, algorithm, size), the same cells as the
 //! C++ counts, into `results/rust-counts.csv`. The number of allocations is
@@ -25,8 +29,8 @@ use std::cmp::Ordering;
 
 // ---- the counters ---------------------------------------------------------------
 // Comparisons and their flips are seen in the comparator; key reads in the
-// key function a radix crate calls. Thread-local: every sort here runs on
-// the calling thread (rdst is told not to use its thread pool).
+// key function the cached-key sort calls. Thread-local: every sort here
+// runs on the calling thread.
 
 thread_local! {
     static COMPARES: Cell<u64> = const { Cell::new(0) };
@@ -63,98 +67,95 @@ fn counted_cmp<T: Item2>(a: &T, b: &T) -> Ordering {
     c.cmp(&0)
 }
 
-// ---- the element as the radix crates see it -------------------------------------
-// voracious and rdst take the key through a trait on the element, and
-// voracious compares elements with PartialOrd in its small-slice fallback:
-// both are counted. The wrapper's equality is on the key alone, as the
-// crates expect.
+// ---- the key as slice::sort_by_cached_key sees it ---------------------------
+// The cached-key sort takes a key per element, keeps the keys in its own
+// buffer with the indices, sorts the pairs and permutes the elements. The
+// key is a counted wrapper: its `Ord` is the harness's comparison on the
+// key, so every comparison the sort makes is seen; the key function counts
+// the reads. Doubles compare by `total_cmp`, what a Rust program has to
+// write to give f64 an `Ord`; the inputs hold no NaN and no negative zero,
+// so that is the natural order.
 
-macro_rules! radix_wrapper {
-    ($name:ident, $item:ty, $key:ty, $levels:expr) => {
-        #[derive(Clone, Copy, Debug)]
-        #[repr(transparent)]
-        pub struct $name(pub $item);
-        impl PartialEq for $name {
-            #[inline]
-            fn eq(&self, o: &Self) -> bool {
-                <$item as brainsort::internals::Elem>::compare(self.0, o.0) == 0
-            }
-        }
-        impl PartialOrd for $name {
-            #[inline]
-            fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-                Some(counted_cmp(&self.0, &o.0))
-            }
-        }
-        impl voracious_radix_sort::Radixable<$key> for $name {
-            type Key = $key;
-            #[inline]
-            fn key(&self) -> $key {
-                note_key();
-                self.0.key
-            }
-        }
-        impl rdst::RadixKey for $name {
-            const LEVELS: usize = $levels;
-            #[inline]
-            fn get_level(&self, level: usize) -> u8 {
-                note_key();
-                rdst::RadixKey::get_level(&self.0.key, level)
-            }
-        }
-    };
+pub trait CachedKey: Copy {
+    fn cmp_key(a: Self, b: Self) -> Ordering;
 }
-radix_wrapper!(RxI32, Item, i32, 4);
-radix_wrapper!(RxI64, I64Item, i64, 8);
-radix_wrapper!(RxF64, DblItem, f64, 8);
+impl CachedKey for i32 {
+    #[inline]
+    fn cmp_key(a: Self, b: Self) -> Ordering {
+        a.cmp(&b)
+    }
+}
+impl CachedKey for i64 {
+    #[inline]
+    fn cmp_key(a: Self, b: Self) -> Ordering {
+        a.cmp(&b)
+    }
+}
+impl CachedKey for f64 {
+    #[inline]
+    fn cmp_key(a: Self, b: Self) -> Ordering {
+        a.total_cmp(&b)
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Counted<K: CachedKey>(pub K);
+impl<K: CachedKey> PartialEq for Counted<K> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == Ordering::Equal
+    }
+}
+impl<K: CachedKey> Eq for Counted<K> {}
+impl<K: CachedKey> PartialOrd for Counted<K> {
+    #[inline]
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl<K: CachedKey> Ord for Counted<K> {
+    #[inline]
+    fn cmp(&self, o: &Self) -> Ordering {
+        let c = K::cmp_key(self.0, o.0);
+        note_compare(c == Ordering::Less);
+        c
+    }
+}
 
-/// Which of the radix crates a key type can go to, and how.
+/// Whether a key type has a cached-key opponent, and how to call it. A
+/// string's key would be the string itself, copied once per element: not
+/// what a program would write, so strings have none.
 pub trait RustOpponents: Item2 + KeyGen
 where
     Dataset<Self>: Generate<Self>,
 {
-    const RADIX: bool;
-    fn radsort(_v: &mut Vec<Self>) {}
-    fn voracious(_v: &mut Vec<Self>, _stable: bool) {}
-    fn rdst(_v: &mut Vec<Self>) {}
+    const CACHED_KEY: bool;
+    fn sort_by_cached_key(_v: &mut Vec<Self>) {}
 }
 macro_rules! scalar_opponents {
-    ($item:ty, $wrap:ident) => {
+    ($item:ty) => {
         impl RustOpponents for $item {
-            const RADIX: bool = true;
-            fn radsort(v: &mut Vec<Self>) {
-                radsort::sort_by_key(v, |x| {
+            const CACHED_KEY: bool = true;
+            fn sort_by_cached_key(v: &mut Vec<Self>) {
+                v.sort_by_cached_key(|x| {
                     note_key();
-                    x.key
+                    Counted(x.key)
                 });
-            }
-            fn voracious(v: &mut Vec<Self>, stable: bool) {
-                use voracious_radix_sort::RadixSort;
-                // SAFETY: the wrapper is repr(transparent) over the element.
-                let w: &mut [$wrap] = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut $wrap, v.len()) };
-                if stable { w.voracious_stable_sort() } else { w.voracious_sort() }
-            }
-            fn rdst(v: &mut Vec<Self>) {
-                use rdst::RadixSort;
-                // SAFETY: as above.
-                let w: &mut [$wrap] = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut $wrap, v.len()) };
-                w.radix_sort_builder().with_single_threaded_tuner().with_parallel(false).sort();
             }
         }
     };
 }
-scalar_opponents!(Item, RxI32);
-scalar_opponents!(I64Item, RxI64);
-scalar_opponents!(DblItem, RxF64);
+scalar_opponents!(Item);
+scalar_opponents!(I64Item);
+scalar_opponents!(DblItem);
 impl RustOpponents for StrItem {
-    const RADIX: bool = false;
+    const CACHED_KEY: bool = false;
 }
 
 // ---- the rows -------------------------------------------------------------------
 
-/// The algorithms of the file, in order, with their stability.
-pub const ALGORITHMS: [(&str, bool); 7] =
-    [("brainsort", true), ("slice::sort", true), ("slice::sort_unstable", false), ("radsort", true), ("voracious_stable_sort", true), ("voracious_sort", false), ("rdst", false)];
+/// The algorithms of the file, in order, with their stability (every one
+/// is stable: that is the entry condition of the pool).
+pub const ALGORITHMS: [(&str, bool); 4] = [("brainsort", true), ("slice::sort", true), ("slice::sort_by_cached_key", true), ("glidesort", true)];
 /// The input patterns, the same twelve as `results/counts.csv`.
 pub const DATASETS: [&str; 12] = ["random", "sorted", "reverse", "nearly_sorted", "few_unique", "all_equal", "runs", "organ_pipe", "small_range", "sawtooth", "prefixed", "sparse_bits"];
 pub const TYPES: [&str; 4] = ["int32", "double", "int64", "string"];
@@ -175,7 +176,8 @@ pub struct CountRow {
     pub compares: u64,
     pub cmp_flips: u64,
     /// Calls of the key function: `None` for a comparison sort, and for
-    /// brainsort, whose key work is counted as table accesses in counts.csv.
+    /// brainsort, whose key work is counted as table accesses in counts.csv;
+    /// one per element for the cached-key sort.
     pub key_reads: Option<u64>,
     pub aux_peak_bytes: usize,
     pub order_hash: u64,
@@ -273,8 +275,8 @@ fn run_one<T: Item2>(items: &[T], reference: &[T], name: &str, stable: bool, sor
 
 /// One-time state, taken out of the counted windows: brainsort's CPU and
 /// cache detection (a temporary buffer on first use) and whatever a crate
-/// sets up on its first call (rdst keeps 76 KiB from its first sort).
-/// Scratch is what a call allocates and frees; this is neither.
+/// sets up on its first call. Scratch is what a call allocates and frees;
+/// this is neither.
 pub fn warm_up() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -326,13 +328,10 @@ where
     });
     let items = &data.items;
     rows.push(run_one(items, &reference, "slice::sort", true, |v| v.sort_by(counted_cmp)));
-    rows.push(run_one(items, &reference, "slice::sort_unstable", false, |v| v.sort_unstable_by(counted_cmp)));
-    if T::RADIX {
-        rows.push(run_one(items, &reference, "radsort", true, T::radsort));
-        rows.push(run_one(items, &reference, "voracious_stable_sort", true, |v| T::voracious(v, true)));
-        rows.push(run_one(items, &reference, "voracious_sort", false, |v| T::voracious(v, false)));
-        rows.push(run_one(items, &reference, "rdst", false, T::rdst));
+    if T::CACHED_KEY {
+        rows.push(run_one(items, &reference, "slice::sort_by_cached_key", true, T::sort_by_cached_key));
     }
+    rows.push(run_one(items, &reference, "glidesort", true, |v| glidesort::sort_by(v, counted_cmp)));
     for r in &mut rows {
         r.dataset = dataset.into();
     }

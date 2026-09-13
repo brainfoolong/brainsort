@@ -34,7 +34,7 @@ mkdir -p results
 
 echo "== timing: results/$ID.csv"
 # shellcheck disable=SC2086
-"$SB" --all-types --all-algos --all-datasets --timing-only $SIZES --reps "${BENCH_REPS:-5}" --rounds 1 \
+"$SB" --all-types --all-datasets --timing-only $SIZES --reps "${BENCH_REPS:-5}" --rounds 1 \
     --id "$ID" --host "${BENCH_HOST:-}" --csv "results/$ID.csv" "$@"
 
 echo "== public API: results/$ID.api.md"

@@ -27,7 +27,7 @@ SIZES=""
 for n in $SIZES_LIST; do SIZES="$SIZES --n $n"; done
 mkdir -p results
 # shellcheck disable=SC2086
-"$BUILD_DIR/sortbench" --counts-only --all-types --all-algos --all-datasets $SIZES --csv "$OUT" "$@"
+"$BUILD_DIR/sortbench" --counts-only --all-types --all-datasets $SIZES --csv "$OUT" "$@"
 if [ -z "${COUNTS_NO_RUST:-}" ] && command -v cargo >/dev/null 2>&1; then
     RUST_OUT=$(echo "$OUT" | sed 's#results/counts#results/rust-counts#')
     echo "== the Rust sorts: $RUST_OUT"

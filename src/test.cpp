@@ -250,12 +250,12 @@ void test_brainsort_adversarial() {
 
 // ---- golden file of deterministic numbers ---------------------------------
 // results/counts.csv is written by `sortbench --counts-only --all-types
-// --all-algos --all-datasets`. Every row is recomputed here and every
-// deterministic column must match exactly. std::sort and std::stable_sort
-// come from the toolchain's standard library, and gfx::timsort runs on its
-// std::vector and algorithms, so those may legitimately differ between
-// standard libraries (libstdc++, libc++, MSVC) and their versions; a
-// mismatch there is reported but is not a failure.
+// --all-datasets`. Every row is recomputed here and every
+// deterministic column must match exactly. std::stable_sort comes from the
+// toolchain's standard library, and gfx::timsort and the Boost.Sort sorts
+// run on its std::vector and algorithms, so those may legitimately differ
+// between standard libraries (libstdc++, libc++, MSVC) and their versions;
+// a mismatch there is reported but is not a failure.
 // One dataset per algorithm is also run twice in a row: the two records must
 // be identical, which catches any dependence on real addresses.
 std::vector<std::string> split_csv(const std::string& line) {
@@ -269,7 +269,7 @@ std::vector<std::string> split_csv(const std::string& line) {
     return out;
 }
 
-bool toolchain_owned(const std::string& algo) { return algo == "std::sort" || algo == "std::stable_sort" || algo == "gfx::timsort"; }
+bool toolchain_owned(const std::string& algo) { return algo == "std::stable_sort" || algo == "gfx::timsort" || algo == "boost::spinsort" || algo == "boost::flat_stable_sort"; }
 
 template <class T>
 void golden_type(const std::vector<std::map<std::string, std::string>>& rows, int& checked, int& mismatched, int& warned) {
@@ -319,7 +319,7 @@ void test_golden() {
     const std::string path = "results/counts.csv";
 #endif
     std::ifstream in(path);
-    if (!in) { std::printf("golden: %s not found, skipped (make it with: sortbench --counts-only --all-types --all-algos --all-datasets --csv results/counts.csv)\n", path.c_str()); return; }
+    if (!in) { std::printf("golden: %s not found, skipped (make it with: sortbench --counts-only --all-types --all-datasets --csv results/counts.csv)\n", path.c_str()); return; }
     std::string line;
     if (!std::getline(in, line)) return;
     const std::vector<std::string> header = split_csv(line);

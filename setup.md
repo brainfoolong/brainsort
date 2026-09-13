@@ -8,7 +8,7 @@ see the [README](README.md); for the results, the
 ## 1. Prerequisites
 
 Brainsort and the benchmark are plain C++20, header-only. The only third-party
-code is the two upstream sorting implementations vendored under
+code is the upstream sorting implementations vendored under
 [third_party/](third_party/README.md), which the benchmark runs as opponents.
 
 | | Linux / WSL2 | Windows | macOS |
@@ -64,7 +64,7 @@ Every build produces:
 | `brainsort_tests_scalar` | the same suite with the vector paths compiled out (`BRAINSORT_NO_SIMD`), the code every non-x86 target runs |
 | `brainsort_single_header` | compiles against `single_include/brainsort.hpp` |
 | `brainsort_fuzz_smoke` | the fuzz target driven by random inputs |
-| `brainsort_api_bench` | the public API against `std::sort`, `std::stable_sort` and pdqsort on plain vectors |
+| `brainsort_api_bench` | the public API against `std::stable_sort`, cpp-TimSort and the Boost.Sort stable sorts on plain vectors |
 | `sortbench` | the benchmark driver |
 | `sortbench_tests` | the benchmark's correctness suite and golden-file check (assertions on) |
 
@@ -162,8 +162,10 @@ cd rust && cargo run --release -p brainsort-bench -- --rust-counts   # only the 
 .\scripts\counts.ps1
 ```
 
-The file is the same on every machine and compiler. Only the libstdc++
-`std::sort` and `std::stable_sort` rows may differ with another libstdc++
+The file is the same on every machine and compiler. Only the rows of the
+sorts that run on the toolchain's standard library (`std::stable_sort`,
+and the vendored cpp-TimSort and Boost.Sort sorts, which use its
+containers and algorithms) may differ with another standard library or
 version; a difference there is a warning, not a failure.
 
 ## 4. Measure
@@ -189,8 +191,8 @@ It writes:
 |---|---|
 | `results/<id>.csv` | the timing, one row per cell: wall time, CPU time, instructions, cycles, peak memory growth, repetitions |
 | `results/<id>.meta.json` | the run stamp: id, host, OS, CPU, compiler, when, the code fingerprint, sizes, repetitions, rounds, seed, pinned CPU |
-| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::sort`, `std::stable_sort`, pdqsort), stamped the same way |
-| `results/<id>.rust.api.md` | the same benchmark of the Rust crate against `slice::sort`, `slice::sort_unstable`, radsort, voracious_radix_sort and rdst, stamped with the fingerprint of the Rust sources |
+| `results/<id>.api.md` | the public-API benchmark (`brainsort::sort` on plain vectors against `std::stable_sort`, cpp-TimSort, Boost.Sort spinsort and flat_stable_sort), stamped the same way |
+| `results/<id>.rust.api.md` | the same benchmark of the Rust crate against `slice::sort`, `slice::sort_by_cached_key` and glidesort, stamped with the fingerprint of the Rust sources |
 | `site/index.html`, `site/rust.html` | the website, from everything in `results/`: one complete page for the C++ library and one for the Rust crate, with a switch between them |
 
 `<id>` defaults to `<os>-<arch>-<compiler>`, e.g. `linux-x86-64-gcc13`.
@@ -234,9 +236,9 @@ whatever sizes they were measured at.
 
 ```sh
 ./build-linux/sortbench --help
-./build-linux/sortbench --algo brainsort --algo pdqsort --type int32             # one type, five standard inputs
-./build-linux/sortbench --type string --all-algos --all-datasets --n 1000000     # one size
-./build-linux/sortbench --type int64 --dataset nearly_sorted --all-algos --n 1000 --n 100000 --csv mine.csv
+./build-linux/sortbench --algo brainsort --algo gfx::timsort --type int32        # one type, five standard inputs
+./build-linux/sortbench --type string --all-datasets --n 1000000                 # one size
+./build-linux/sortbench --type int64 --dataset nearly_sorted --n 1000 --n 100000 --csv mine.csv
 ```
 
 | option | default | meaning |
@@ -246,7 +248,7 @@ whatever sizes they were measured at.
 | `--rounds K` | 2 | run the whole matrix K times, keep the lowest median |
 | `--seed S` | 20260912 | RNG seed for the inputs |
 | `--type NAME` | int32 | `int32`, `double`, `int64`, `string` (repeatable); `--all-types` |
-| `--algo NAME` | | restrict to an algorithm (repeatable); `--all-algos` adds brainsort, the baselines and the `std::` references |
+| `--algo NAME` | | restrict to an algorithm (repeatable; default: every one) |
 | `--dataset NAME` | the 5 standard | restrict to an input (repeatable); `--all-datasets` |
 | `--pin CPU` | auto | pin the measuring thread; `-1` disables |
 | `--counts-only` | | the deterministic columns only, no timing |

@@ -1,27 +1,65 @@
 // Table of algorithms under test, per element type. Each entry provides an
 // uncounted entry point (used for timing / hardware counters) and a counted
 // one (used for access counts and the correctness check of the instrumented
-// path). The upstream code is counted through an element wrapper whose copy
+// path). The opponents are upstream code, vendored or taken from the
+// toolchain as shipped, and counted through an element wrapper whose copy
 // operations and comparator operands report to g_trace, so the same
 // definitions of "read", "write" and "compare" hold for every algorithm.
+//
+// The pool is what brainsort can be compared with like for like: every
+// opponent is stable, sorts every key type of the harness and takes an
+// arbitrary comparator (docs/decisions/0017.md). Nothing here is our own
+// implementation of somebody else's algorithm.
 #pragma once
 #include "sortbench/algorithms/brainsort.hpp"
-#include "sortbench/algorithms/heapsort.hpp"
-#include "sortbench/algorithms/introsort.hpp"
-#include "sortbench/algorithms/mergesort.hpp"
-#include "sortbench/algorithms/pdqsort.hpp"
-#include "sortbench/algorithms/radix.hpp"
-#include "sortbench/algorithms/timsort.hpp"
 #include "sortbench/core.hpp"
 
 // Upstream reference implementations, vendored unmodified (see third_party/README.md).
 #include "gfx/timsort.hpp"
-#include "pdqsort/pdqsort.h"
 
+// Boost.Sort takes its scratch memory from std::malloc, which the global
+// operator new replacement of trace_alloc.hpp does not see. Its headers are
+// included with the two names redirected to counted twins, so the Boost code
+// stays exactly as shipped and its scratch is counted like everyone else's:
+// the same peak, the same allocation count, a region for the cache model.
+// Every standard header Boost.Sort includes is included first, so the macros
+// meet only Boost's own calls.
 #include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdlib>
+#include <exception>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
+namespace sb::registry_detail {
+inline void* counted_malloc(std::size_t n) {
+    void* p = std::malloc(n ? n : 1);
+    if (p) g_trace.on_alloc(p, n);
+    return p;
+}
+inline void counted_free(void* p) {
+    if (!p) return;
+    g_trace.on_free(p);
+    std::free(p);
+}
+}  // namespace sb::registry_detail
+namespace std {
+using sb::registry_detail::counted_free;
+using sb::registry_detail::counted_malloc;
+}  // namespace std
+#define malloc counted_malloc
+#define free counted_free
+#include "boost/sort/flat_stable_sort/flat_stable_sort.hpp"
+#include "boost/sort/spinsort/spinsort.hpp"
+#undef malloc
+#undef free
+
 #include <cstring>
 #include <string>
-#include <vector>
 
 namespace sb {
 
@@ -45,7 +83,7 @@ struct Wrap {
 };
 
 // Function objects (not function pointers) so the comparison is inlined into
-// the std:: algorithms exactly as it is in our own implementations.
+// the upstream algorithms exactly as a user's comparator would be.
 template <class T> struct KeyLess {
     bool operator()(const T& a, const T& b) const { return KeyTraits<T>::less(a, b); }
 };
@@ -78,21 +116,18 @@ template <class T> struct TracedLess {
 // array is sorted in place through the wrapper type; nothing is copied.
 template <class T> Traced<T>* traced(T* p) { return reinterpret_cast<Traced<T>*>(p); }
 
-template <class T> void std_sort_raw(T* p, size_t n)            { std::sort(p, p + n, KeyLess<T>{}); }
-template <class T> void std_sort_counted(T* p, size_t n)        { std::sort(traced(p), traced(p) + n, TracedLess<T>{}); }
+// The toolchain's std::stable_sort: libstdc++, libc++ or the MSVC STL,
+// whichever the build uses.
 template <class T> void std_stable_sort_raw(T* p, size_t n)     { std::stable_sort(p, p + n, KeyLess<T>{}); }
 template <class T> void std_stable_sort_counted(T* p, size_t n) { std::stable_sort(traced(p), traced(p) + n, TracedLess<T>{}); }
-// orlp/pdqsort.h. With a user comparator the upstream header selects its
-// "non-branchless" partition; the branchless block partition is what it
-// selects on its own for arithmetic keys with std::less, and what Rust's
-// sort_unstable used, so both are run.
-template <class T> void pdq_ref_raw(T* p, size_t n)                { ::pdqsort(p, p + n, KeyLess<T>{}); }
-template <class T> void pdq_ref_counted(T* p, size_t n)            { ::pdqsort(traced(p), traced(p) + n, TracedLess<T>{}); }
-template <class T> void pdq_branchless_ref_raw(T* p, size_t n)     { ::pdqsort_branchless(p, p + n, KeyLess<T>{}); }
-template <class T> void pdq_branchless_ref_counted(T* p, size_t n) { ::pdqsort_branchless(traced(p), traced(p) + n, TracedLess<T>{}); }
 // gfx/timsort.hpp: the widely used C++ port of CPython's listobject.c / OpenJDK's TimSort.java.
-template <class T> void timsort_ref_raw(T* p, size_t n)            { gfx::timsort(p, p + n, KeyLess<T>{}); }
-template <class T> void timsort_ref_counted(T* p, size_t n)        { gfx::timsort(traced(p), traced(p) + n, TracedLess<T>{}); }
+template <class T> void timsort_ref_raw(T* p, size_t n)         { gfx::timsort(p, p + n, KeyLess<T>{}); }
+template <class T> void timsort_ref_counted(T* p, size_t n)     { gfx::timsort(traced(p), traced(p) + n, TracedLess<T>{}); }
+// Boost.Sort's two single-threaded stable sorts.
+template <class T> void spinsort_raw(T* p, size_t n)            { boost::sort::spinsort(p, p + n, KeyLess<T>{}); }
+template <class T> void spinsort_counted(T* p, size_t n)        { boost::sort::spinsort(traced(p), traced(p) + n, TracedLess<T>{}); }
+template <class T> void flat_stable_raw(T* p, size_t n)         { boost::sort::flat_stable_sort(p, p + n, KeyLess<T>{}); }
+template <class T> void flat_stable_counted(T* p, size_t n)     { boost::sort::flat_stable_sort(traced(p), traced(p) + n, TracedLess<T>{}); }
 
 #define SB_ENTRY(fn) \
     registry_detail::Wrap<T, &fn<Array<T, false>>, &fn<Array<T, true>>>::raw, \
@@ -100,37 +135,21 @@ template <class T> void timsort_ref_counted(T* p, size_t n)        { gfx::timsor
 
 template <class T>
 std::vector<AlgoInfo<T>> make_algorithms() {
-    // Our own ports, written against the counted Array view so reads, writes
-    // and scratch memory can be measured. They are algorithmically faithful,
-    // but the view costs them 5-50% of wall time compared with the upstream
-    // code below, so speed claims are made against the upstream code.
-    std::vector<AlgoInfo<T>> v = {
-        {"introsort", "port of libstdc++ std::sort (also .NET Array.Sort)",                              false, true, true, SB_ENTRY(introsort)},
-        {"timsort",   "port of OpenJDK TimSort (Java Arrays.sort(Object[]), Android, V8; CPython before 3.11)", true, true, true, SB_ENTRY(timsort)},
-        {"pdqsort",   "port of orlp pdqsort, non-branchless path (Go sort.Slice/sort.Ints since 1.19, Boost)", false, true, true, SB_ENTRY(pdqsort)},
-        {"mergesort", "classic top-down merge sort with an n-element buffer",                              true, true, true, SB_ENTRY(merge_sort)},
-        {"heapsort",  "port of libstdc++ make_heap/sort_heap (bottom-up, like the Linux kernel's sort())", false, true, true, SB_ENTRY(heapsort)},
-        // Candidate developed here.
-        {"brainsort", "candidate: scout pass -> sorted/reverse/runs/displaced-merge/compressed radix", true, false, true, SB_ENTRY(brainsort)},
+    return {
+        // The candidate, written against the counted Array view so reads,
+        // writes and scratch memory are measured from the inside.
+        {"brainsort",               "candidate: scout pass -> sorted/reverse/runs/displaced-merge/compressed radix", true, false, true, SB_ENTRY(brainsort)},
+        // Upstream code, compiled as shipped; counted through the Traced<T>
+        // wrapper. These are the opponents every claim is measured against.
+        {"std::stable_sort",        "the standard library's stable sort, as shipped (libstdc++, libc++ or MSVC STL)", true, true, true, registry_detail::std_stable_sort_raw<T>, registry_detail::std_stable_sort_counted<T>},
+        {"gfx::timsort",            "upstream cpp-TimSort 2.1.0, C++ port of CPython/OpenJDK TimSort",                true, true, true, registry_detail::timsort_ref_raw<T>,     registry_detail::timsort_ref_counted<T>},
+        {"boost::spinsort",         "upstream Boost.Sort spinsort, n/2 buffer",                                        true, true, true, registry_detail::spinsort_raw<T>,        registry_detail::spinsort_counted<T>},
+        {"boost::flat_stable_sort", "upstream Boost.Sort flat_stable_sort, n/256 + 8 KiB buffer",                     true, true, true, registry_detail::flat_stable_raw<T>,     registry_detail::flat_stable_counted<T>},
     };
-    if constexpr (!KeyTraits<T>::chunked) {
-        v.push_back({"radix11", "baseline: LSD radix, 11-bit digits",                     true, false, true, SB_ENTRY(radix_sort11)});
-        v.push_back({"radix16", "experiment: LSD radix, 16-bit digits, 512 KiB tables",  true, false, true, SB_ENTRY(radix_sort16)});
-    }
-    // Upstream code, compiled as shipped; counted through the Traced<T>
-    // wrapper. These are the opponents every speed claim is measured against.
-    v.push_back({"std::sort",               "libstdc++ introsort, as shipped",                                              false, true, true, registry_detail::std_sort_raw<T>,             registry_detail::std_sort_counted<T>});
-    v.push_back({"std::stable_sort",        "libstdc++ merge sort with an n/2 buffer, as shipped",                          true,  true, true, registry_detail::std_stable_sort_raw<T>,      registry_detail::std_stable_sort_counted<T>});
-    v.push_back({"orlp::pdqsort",           "upstream pdqsort.h, non-branchless partition (what a custom comparator gets)", false, true, true, registry_detail::pdq_ref_raw<T>,              registry_detail::pdq_ref_counted<T>});
-    v.push_back({"orlp::pdqsort_branchless","upstream pdqsort.h, branchless block partition (what plain int/double keys get; Rust sort_unstable < 1.81)", false, true, true, registry_detail::pdq_branchless_ref_raw<T>, registry_detail::pdq_branchless_ref_counted<T>});
-    v.push_back({"gfx::timsort",            "upstream cpp-TimSort 2.1.0, C++ port of CPython/OpenJDK TimSort",             true,  true, true, registry_detail::timsort_ref_raw<T>,          registry_detail::timsort_ref_counted<T>});
-    return v;
 }
 #undef SB_ENTRY
 
 }  // namespace registry_detail
-
-constexpr size_t kPrimaryAlgorithmCount = 5;
 
 template <class T>
 inline const std::vector<AlgoInfo<T>>& algorithms() {

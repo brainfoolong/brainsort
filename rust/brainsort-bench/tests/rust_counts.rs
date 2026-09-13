@@ -17,17 +17,19 @@ fn rust_counts_are_reproduced() {
 
 #[test]
 fn every_rust_sort_is_counted_on_one_cell() {
-    // The counters see something for every algorithm: comparisons for the
-    // comparison sorts, key reads for the radix crates; every stable sort
-    // produces the one stable order.
+    // The counters see something for every algorithm: comparisons for every
+    // sort but brainsort (whose scout pass compares once per element), key
+    // reads for the cached-key sort; every sort produces the one stable order.
     let rows = counts::run_cell::<brainsort_bench::Item>("random", 1000);
     assert_eq!(rows.len(), counts::ALGORITHMS.len());
     for r in &rows {
         assert!(r.ok, "{}: {}", r.algorithm, r.error);
-        let radix = matches!(r.algorithm.as_str(), "radsort" | "voracious_stable_sort" | "voracious_sort" | "rdst");
-        if radix {
-            assert!(r.key_reads.unwrap_or(0) >= 1000, "{}: key reads {:?}", r.algorithm, r.key_reads);
-        } else if r.algorithm != "brainsort" {
+        if r.algorithm == "slice::sort_by_cached_key" {
+            assert_eq!(r.key_reads, Some(1000), "{}: key reads {:?}", r.algorithm, r.key_reads);
+        } else {
+            assert_eq!(r.key_reads, None, "{}: key reads {:?}", r.algorithm, r.key_reads);
+        }
+        if r.algorithm != "brainsort" {
             assert!(r.compares >= 1000, "{}: {} compares", r.algorithm, r.compares);
         }
     }

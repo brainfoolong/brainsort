@@ -99,7 +99,7 @@ if(BRAINSORT_BUILD_TESTS)
   target_compile_options(brainsort_fuzz_smoke PRIVATE ${BRAINSORT_ASSERTS_ON})
   add_test(NAME brainsort_fuzz_smoke COMMAND brainsort_fuzz_smoke 3000)
 
-  # The public API against std::sort, std::stable_sort and pdqsort.
+  # The public API against the stable sorts that ship: std::stable_sort, cpp-TimSort, Boost.Sort.
   add_executable(brainsort_api_bench bench/api_bench.cpp)
   target_include_directories(brainsort_api_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
   target_link_libraries(brainsort_api_bench PRIVATE brainsort brainsort_flags)

@@ -53,8 +53,9 @@ MEASURED_PATHS = ["include", "src", "third_party", "CMakeLists.txt"]
 VERSION_RE = re.compile(r'#define BRAINSORT_VERSION "([^"]+)"')
 
 CANDIDATE = "brainsort"
-BASELINES = ["radix11", "radix16"]
-UPSTREAM = ["std::sort", "std::stable_sort", "orlp::pdqsort", "orlp::pdqsort_branchless", "gfx::timsort"]
+# The pool: the sorts that can do what brainsort does, as shipped (stable,
+# every key type, an arbitrary comparator; decision 0017).
+UPSTREAM = ["std::stable_sort", "gfx::timsort", "boost::spinsort", "boost::flat_stable_sort"]
 
 TYPES = [
     ("int32", 8, "int32_t key in an 8-byte element", "counters, small ids"),
@@ -81,33 +82,21 @@ DATASETS = {
 # name: (what it is, where the design ships, extra memory)
 ALGOS = {
     "brainsort": ("the candidate: a scout pass picks a route (sorted, reversed, few runs, displaced elements, or radix)", "this repository", "about n/2 elements on random input, 0 on sorted or reversed input"),
-    "std::stable_sort": ("libstdc++ merge sort, the compiler's own, as shipped", "every C++ program that calls std::stable_sort", "n/2"),
+    "std::stable_sort": ("the standard library's stable sort, the toolchain's own, as shipped: a merge sort in libstdc++ and the MSVC STL, in libc++ 20+ a radix sort for integers", "every C++ program that calls std::stable_sort", "n/2"),
     "gfx::timsort": ("cpp-TimSort 2.1.0, upstream code as shipped", "the C++ port of the TimSort in CPython and OpenJDK", "up to n/2"),
-    "timsort": ("our port of OpenJDK TimSort, instrumented", "Java and Android Arrays.sort(Object[]), V8; CPython before 3.11", "up to n/2"),
-    "mergesort": ("our classic top-down merge sort, instrumented", "textbook", "n"),
-    "std::sort": ("libstdc++ introsort, the compiler's own, as shipped", "every C++ program that calls std::sort", "none"),
-    "orlp::pdqsort": ("upstream pdqsort.h, the partition a custom comparator gets", "Go sort.Slice and sort.Ints since 1.19, Boost", "none"),
-    "orlp::pdqsort_branchless": ("upstream pdqsort.h, the branchless block partition it selects for plain int and double keys", "Rust sort_unstable before 1.81", "none"),
-    "introsort": ("our port of libstdc++ std::sort, instrumented", ".NET Array.Sort", "none"),
-    "pdqsort": ("our port of pdqsort.h, non-branchless path, instrumented", "Go, Boost", "none"),
-    "heapsort": ("our port of libstdc++ make_heap/sort_heap, instrumented", "the Linux kernel's sort()", "none"),
-    "radix11": ("a textbook LSD radix sort with 11-bit digits: brainsort's building block", "baseline, not shipped anywhere", "n + tables"),
-    "radix16": ("a textbook LSD radix sort with 16-bit digits and 512 KiB of tables", "baseline, not shipped anywhere", "n + tables"),
+    "boost::spinsort": ("Boost.Sort spinsort 1.92.0, upstream code as shipped: an adaptive merge sort", "Boost", "n/2"),
+    "boost::flat_stable_sort": ("Boost.Sort flat_stable_sort 1.92.0, upstream code as shipped: a block merge sort with a small buffer", "Boost", "n/256 + 8 KiB"),
 }
-ALGO_ORDER = ["brainsort", "std::stable_sort", "gfx::timsort", "timsort", "mergesort", "radix11", "radix16",
-              "std::sort", "orlp::pdqsort", "orlp::pdqsort_branchless", "introsort", "pdqsort", "heapsort"]
+ALGO_ORDER = ["brainsort", "std::stable_sort", "gfx::timsort", "boost::spinsort", "boost::flat_stable_sort"]
 # The Rust page's pool: the crate against the Rust sorts as shipped, counted
 # through what a Rust program can observe (rust-counts.csv, decision 0010).
 RUST_ALGOS = {
     "brainsort": ("the candidate, the Rust crate: a scout pass picks a route (sorted, reversed, few runs, displaced elements, or radix)", "this repository, crates.io", "about n/2 elements on random input, 0 on sorted or reversed input"),
     "slice::sort": ("the standard library's stable sort, driftsort, as shipped in Rust 1.81+", "every Rust program that calls slice::sort", "n elements, n/2 above a size threshold"),
-    "slice::sort_unstable": ("the standard library's unstable sort, ipnsort, as shipped in Rust 1.81+", "every Rust program that calls slice::sort_unstable", "none"),
-    "radsort": ("the radsort crate: an LSD radix sort on scalar keys, stable, as published", "crates.io", "n elements"),
-    "voracious_stable_sort": ("the voracious_radix_sort crate's stable sort: a radix sort chosen by size and key type, as published", "crates.io", "n elements and tables"),
-    "voracious_sort": ("the voracious_radix_sort crate's unstable sort, in place for large inputs, as published", "crates.io", "tables; a buffer on small inputs"),
-    "rdst": ("the rdst crate: a radix sort whose tuner picks an algorithm per pass, single-threaded here, as published", "crates.io", "n elements and tables"),
+    "slice::sort_by_cached_key": ("the standard library's sort by a cached key: the keys and indices in a buffer, sorted with the same sort, then one permutation; the standard route for a sort by key", "every Rust program that calls slice::sort_by_cached_key", "n keys and indices, plus the sort's own"),
+    "glidesort": ("the glidesort crate 0.1, upstream code as published: the stable sort driftsort grew out of", "crates.io", "n/8 elements by default"),
 }
-RUST_ALGO_ORDER = ["brainsort", "slice::sort", "radsort", "voracious_stable_sort", "slice::sort_unstable", "voracious_sort", "rdst"]
+RUST_ALGO_ORDER = ["brainsort", "slice::sort", "slice::sort_by_cached_key", "glidesort"]
 RUST_UPSTREAM = [a for a in RUST_ALGO_ORDER if a != "brainsort"]
 API_TYPES = {
     "int32_t": "std::vector<int32_t>",
@@ -121,15 +110,7 @@ API_TYPES = {
 
 
 def group_of(name):
-    if name in RUST_UPSTREAM:
-        return "upstream"
-    if name == CANDIDATE:
-        return "candidate"
-    if name in BASELINES:
-        return "baseline"
-    if name in UPSTREAM:
-        return "upstream"
-    return "port"
+    return "candidate" if name == CANDIDATE else "upstream"
 
 
 def num(s):
@@ -211,7 +192,7 @@ def load_rust_counts(paths):
     return det, stable
 
 
-def det_block(det, stable, order, table, cols, baselines, extra_sizes):
+def det_block(det, stable, order, table, cols, extra_sizes):
     """The page's deterministic pool: the algorithms, sizes, types and inputs the rows have."""
     algo_names = [a for a in order if any(k[3] == a for k in det)] + sorted({k[3] for k in det} - set(order))
     algos = [{"name": a, "group": group_of(a), "stable": stable.get(a, False),
@@ -223,7 +204,7 @@ def det_block(det, stable, order, table, cols, baselines, extra_sizes):
         "types": [{"name": t, "elemBytes": b, "desc": d, "real": r} for t, b, d, r in TYPES if any(k[1] == t for k in det)],
         "datasets": [{"name": d, "description": DATASETS.get(d, ""), "standard": d in STANDARD}
                      for d in STANDARD + EXTRA + sorted(present_ds - set(STANDARD + EXTRA)) if d in present_ds],
-        "algos": algos, "baselines": baselines, "detCols": cols,
+        "algos": algos, "detCols": cols,
         "det": {"cols": ["n", "t", "d", "a"] + cols, "rows": [[k[0], k[1], k[2], k[3]] + v for k, v in sorted(det.items())]},
     }
 
@@ -321,9 +302,9 @@ LANG_PAIRS = {
 }
 
 
-def load_rust_api(path):
-    """The Rust port's table: the opponents come from the header row."""
-    pid = os.path.basename(path)[:-len(".rust.api.md")]
+def load_api_table(path, suffix):
+    """A public-API benchmark file: the opponents come from the header row."""
+    pid = os.path.basename(path)[:-len(suffix)]
     with open(path, encoding="utf-8") as f:
         text = f.read()
     m = STAMP_RE.search(text)
@@ -354,37 +335,6 @@ def load_rust_api(path):
         except ValueError:
             continue
     return pid, stamp, note, opponents, rows
-
-
-def load_api(path):
-    pid = os.path.basename(path)[:-len(".api.md")]
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    m = STAMP_RE.search(text)
-    stamp = {}
-    if m:
-        try:
-            stamp = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            stamp = {}
-    note = ""
-    rows = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("<!--") or line.startswith('"') or line.startswith("}") or line.startswith("-->"):
-            continue
-        if not line.startswith("|"):
-            if not note and not line.startswith("{"):
-                note = line
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 8 or cells[0] == "type" or set(cells[0]) <= set("-:"):
-            continue
-        try:
-            rows.append([cells[0], int(cells[1]), cells[2], float(cells[3]), float(cells[4]), float(cells[5]), float(cells[6])])
-        except ValueError:
-            continue
-    return pid, stamp, note, rows
 
 
 def main():
@@ -438,11 +388,11 @@ def main():
     # Quiet machines (performance counters, no other tenants) before shared runners.
     platforms.sort(key=lambda p: (p["shared"], p["label"]))
 
-    api_platforms, api_rows = [], []
+    api_platforms, api_rows, api_opponents = [], [], []
     for path in sorted(glob.glob(os.path.join(results, "*.api.md"))):
         if path.endswith(".rust.api.md"):
             continue
-        pid, stamp, note, rows = load_api(path)
+        pid, stamp, note, opponents, rows = load_api_table(path, ".api.md")
         code = stamp.get("code") or ""
         stale = "unknown" if not code or not current_code else ("stale" if code != current_code else "fresh")
         if stale == "stale" and not allow_stale:
@@ -455,6 +405,8 @@ def main():
         api_platforms.append({"id": pid, "label": plat["label"] if plat else short_label(stamp, pid), "note": note,
                               "stale": stale, "reps": stamp.get("reps", ""), "cpu": stamp.get("cpu", plat["cpu"] if plat else ""),
                               "shared": plat["shared"] if plat else is_shared_runner(stamp), "measured": stamp.get("measured", "")})
+        if opponents and not api_opponents:
+            api_opponents = opponents
         api_rows.extend([[pid] + r[:4] + [r[4:]] for r in rows])
         print(f"{path}: {len(rows)} rows, {stale}")
     api_platforms.sort(key=lambda p: (p["shared"], p["label"]))
@@ -465,7 +417,7 @@ def main():
     rust_code = code_fingerprint(ROOT, RUST_MEASURED_PATHS)
     rust_platforms, rust_rows, rust_opponents = [], [], []
     for path in sorted(glob.glob(os.path.join(results, "*.rust.api.md"))):
-        pid, stamp, note, opponents, rows = load_rust_api(path)
+        pid, stamp, note, opponents, rows = load_api_table(path, ".rust.api.md")
         code = stamp.get("code") or ""
         stale = "unknown" if not code or not rust_code else ("stale" if code != rust_code else "fresh")
         if stale == "stale" and not allow_stale:
@@ -490,8 +442,8 @@ def main():
     # The deterministic pool of each page: the C++ harness on the C++ page, the
     # Rust sorts as shipped on the Rust page.
     det_pages = {
-        "cpp": det_block(det, stable, ALGO_ORDER, ALGOS, DET_COLS, BASELINES, {r[1] for r in timing}),
-        "rust": det_block(rust_det, rust_stable, RUST_ALGO_ORDER, RUST_ALGOS, RUST_DET_COLS, [], {r[2] for r in rust_rows}),
+        "cpp": det_block(det, stable, ALGO_ORDER, ALGOS, DET_COLS, {r[1] for r in timing}),
+        "rust": det_block(rust_det, rust_stable, RUST_ALGO_ORDER, RUST_ALGOS, RUST_DET_COLS, {r[2] for r in rust_rows}),
     }
     data = {
         "version": version(), "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -501,13 +453,13 @@ def main():
         "timing": {"cols": ["p", "n", "t", "d", "a", "ok", "error"] + TIMING_COLS, "rows": timing},
         "skipped": skipped,
         # The public call on a plain vector, one benchmark per language, the same shape: brainsort,
-        # then the opponents in header order; `stable` is the index of the like-for-like stable one.
+        # then the opponents in header order; `std` is the index of the standard library's stable sort.
         "bench": {
-            "cpp": {"platforms": api_platforms, "opponents": ["std::sort", "std::stable_sort", "pdqsort"], "stable": 1, "code": current_code,
+            "cpp": {"platforms": api_platforms, "opponents": api_opponents, "std": 0, "code": current_code,
                     "types": [{"name": t, "desc": d} for t, d in API_TYPES.items() if any(r[1] == t for r in api_rows)],
                     "sizes": sorted({r[2] for r in api_rows}), "datasets": [d for d in STANDARD if any(r[3] == d for r in api_rows)],
                     "cols": ["p", "t", "n", "d", "bs", "others"], "rows": api_rows},
-            "rust": {"platforms": rust_platforms, "opponents": rust_opponents, "stable": 0, "code": rust_code,
+            "rust": {"platforms": rust_platforms, "opponents": rust_opponents, "std": 0, "code": rust_code,
                      "types": [{"name": t, "desc": d} for t, d in RUST_API_TYPES.items() if any(r[1] == t for r in rust_rows)],
                      "sizes": sorted({r[2] for r in rust_rows}), "datasets": [d for d in STANDARD if any(r[3] == d for r in rust_rows)],
                      "cols": ["p", "t", "n", "d", "bs", "others"], "rows": rust_rows},
@@ -542,7 +494,7 @@ TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brainsort __VERSION__: <!--cpp-->C++<!--/cpp--><!--rust-->Rust<!--/rust--> benchmark results</title>
-<meta name="description" content="brainsort, a stable sort for integer, floating-point and string keys, measured against the sorting algorithms that ship in today's standard libraries: deterministic work counts on every input size, and timing per machine.">
+<meta name="description" content="brainsort, a stable sort for integer, floating-point and string keys, measured against the stable sorts that ship in today's standard libraries and the common libraries: deterministic work counts on every input size, and timing per machine.">
 <style>
 :root {
   color-scheme: light;
@@ -780,7 +732,7 @@ footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--border
 <header>
   <div class="topline"><h1>brainsort</h1><span class="badge accent">version __VERSION__</span><span class="badge">stable sort</span><!--cpp--><span class="badge">header-only C++20</span><!--/cpp--><!--rust--><span class="badge">Rust crate</span><!--/rust--><a class="ci" id="ci-badge" href="#"><img alt="CI status" src=""></a></div>
   <nav class="lang" data-lang="__LANG__" aria-label="language"><a class="cpp" href="index.html"><b>C++</b><span>the header-only library, measured against the C++ sorts</span></a><a class="rust" href="rust.html"><b>Rust</b><span>the crate, measured against the Rust sorts</span></a></nav>
-  <p class="lead">A stable sorting algorithm for keys that map to an ordered integer: numbers, strings, dates, ids. <!--cpp-->This page is the C++ library: measured against the sorts that ship in today's C++ standard libraries, on the same inputs, the same compiler flags and the same machines. The Rust crate has its own page with the same sections, built from its own measurements.<!--/cpp--><!--rust-->This page is the Rust crate: the same algorithm as the C++ library, held to the same deterministic counts by its tests, and timed on its own against the sorts the Rust ecosystem ships, on the same inputs and the same machines. The C++ library has its own page with the same sections.<!--/rust--></p>
+  <p class="lead">A stable sorting algorithm for keys that map to an ordered integer: numbers, strings, dates, ids. <!--cpp-->This page is the C++ library: measured against the stable sorts that ship in today's C++ standard libraries and in the common libraries, on the same inputs, the same compiler flags and the same machines. The Rust crate has its own page with the same sections, built from its own measurements.<!--/cpp--><!--rust-->This page is the Rust crate: the same algorithm as the C++ library, held to the same deterministic counts by its tests, and timed on its own against the stable sorts the Rust ecosystem ships, on the same inputs and the same machines. The C++ library has its own page with the same sections.<!--/rust--></p>
   <div class="links" id="links"></div>
   <p class="stamp" id="stamp"></p>
   <nav class="toc">
@@ -844,24 +796,23 @@ brainsort::sort_by(&amp;mut rows, |a, b| a.name.cmp(&amp;b.name));       // a co
 <div class="g"><span class="n">1</span><b>A cell</b><p>One key type on one input pattern at one size. In every cell brainsort is compared with the <em>best</em> of the other sorts shown, whichever that is. <em>38 of 45</em> means brainsort is best or tied in 38 cells.</p></div>
 <div class="g"><span class="n">2</span><b>Lower is better</b><p>On every number here: fewer bytes moved, fewer comparisons, less memory, less time.</p></div>
 <div class="g"><span class="n">3</span><b>Two kinds of numbers</b><p><span class="tag det" style="margin-left:0">deterministic</span> numbers describe what an algorithm <em>does</em>: bytes moved, comparisons made, memory asked for. Counted, the same on every machine, held by the test suite. <span class="tag" style="margin-left:0">measured</span> numbers are clocks and hardware counters: they depend on the machine and vary between runs, so they are shown per machine.</p></div>
-<div class="g"><span class="n">4</span><b>Stable sorts by default</b><p>A stable sort keeps equal keys in their original order, which sorting records by one field needs. It has more work to do than an unstable sort. brainsort is stable and is compared with the other stable sorts; switch on <em>unstable sorts</em> to add <!--cpp-->std::sort and pdqsort<!--/cpp--><!--rust-->slice::sort_unstable, voracious_sort and rdst<!--/rust-->.</p></div>
+<div class="g"><span class="n">4</span><b>Only like for like</b><p>Every sort on this page is stable (it keeps equal keys in their original order, which sorting records by one field needs), sorts every key type shown and takes an arbitrary comparator, and every one is upstream code run as shipped. A sort that does less (an unstable sort, a radix sort for scalar keys only) has an easier job and is not an opponent; a port written here could be slower than the original and is not one either.</p></div>
 <div class="g"><span class="n">5</span><b>Sizes</b><p>Every number exists at several input sizes. The <em>size</em> control changes the whole page; the <em>across sizes</em> charts show a metric per element as the input grows.</p></div>
-<div class="g"><span class="n">6</span><b>Colours</b><p>Blue: brainsort ahead. Red: behind. Grey: a tie within 5%. Darker is a larger margin. In charts, colour is the family of an algorithm:</p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><!--cpp--><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span><span><i style="background:var(--c-port)"></i>our instrumented ports</span><span><i style="background:var(--c-baseline)"></i>radix baselines</span><!--/cpp--><!--rust--><span><i style="background:var(--c-upstream)"></i>the Rust sorts, as shipped</span><!--/rust--></div></div>
+<div class="g"><span class="n">6</span><b>Colours</b><p>Blue: brainsort ahead. Red: behind. Grey: a tie within 5%. Darker is a larger margin. In charts:</p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><!--cpp--><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span><!--/cpp--><!--rust--><span><i style="background:var(--c-upstream)"></i>the Rust sorts, as shipped</span><!--/rust--></div></div>
 </div>
 </section>
 
 <div class="panel" id="panel"><div class="inner">
   <div class="row"><span class="lbl">size</span><div class="chips" id="c-size"></div></div>
   <div class="row"><span class="lbl">key type</span><div class="chips" id="c-types"></div></div>
-  <div class="row"><span class="lbl">inputs</span><div class="chips" id="c-datasets"></div>
-    <span class="lbl" style="min-width:0;margin-left:8px">also show</span><div class="chips" id="c-groups"></div></div>
+  <div class="row"><span class="lbl">inputs</span><div class="chips" id="c-datasets"></div></div>
 </div></div>
 
 <section id="det">
 <span class="eyebrow">Same on every machine</span>
 <h2>What each algorithm does <span class="tag det">deterministic</span></h2>
 <div id="det-fallback"></div>
-<p class="intro">These numbers are the same on every computer. They are counted, not timed: <!--cpp-->how many bytes an algorithm moves, how many comparisons it makes, how much memory it asks for.<!--/cpp--><!--rust-->how many comparisons a sort makes, how often their outcome flips, how often a radix sort asks for a key, how much memory it asks for. The other sorts are the ones a Rust program can call, as shipped: the standard library's driftsort and ipnsort and the radix crates radsort, voracious_radix_sort and rdst, counted through what a program can observe of them (the comparator they are given, the key trait they ask for, the allocator). What cannot be observed of a sort one did not write, the bytes it moves, is counted for brainsort alone in the golden file and compared with the C++ pool on <a href="index.html">the C++ page</a>; the crate's own bytes moved are exactly those, held by its test suite. A row whose output failed the check is left out: voracious_stable_sort does not keep equal keys in order on reversed input at a million elements.<!--/rust--> Choose a metric:</p>
+<p class="intro">These numbers are the same on every computer. They are counted, not timed: <!--cpp-->how many bytes an algorithm moves, how many comparisons it makes, how much memory it asks for.<!--/cpp--><!--rust-->how many comparisons a sort makes, how often their outcome flips, how often the cached-key sort asks for a key, how much memory it asks for. The other sorts are the stable sorts a Rust program can call, as shipped: the standard library's driftsort, its sort by a cached key and the glidesort crate, counted through what a program can observe of them (the comparator they are given, the key function they call, the allocator). What cannot be observed of a sort one did not write, the bytes it moves, is counted for brainsort alone in the golden file and compared with the C++ pool on <a href="index.html">the C++ page</a>; the crate's own bytes moved are exactly those, held by its test suite.<!--/rust--> Choose a metric:</p>
 <div class="chips" id="c-det-metric"></div>
 <p class="note" id="det-metric-note"></p>
 <p class="note" id="det-nocontest" hidden></p>
@@ -885,7 +836,7 @@ brainsort::sort_by(&amp;mut rows, |a, b| a.name.cmp(&amp;b.name));       // a co
 <details class="section" id="timing">
 <summary><span class="eyebrow">Per machine</span><h2>Measured time per machine <span class="tag">measured</span></h2><span class="muted" id="timing-sum"></span><span class="hint"></span></summary>
 <div class="body">
-<p class="intro" id="timing-intro"></p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span><span><i style="background:var(--c-port)"></i>our instrumented ports</span><span><i style="background:var(--c-baseline)"></i>radix baselines</span></div>
+<p class="intro" id="timing-intro"></p><div class="legend"><span><i style="background:var(--c-candidate)"></i>brainsort</span><span><i style="background:var(--c-upstream)"></i>upstream code, as shipped</span></div>
 <div class="row inline"><span class="lbl" style="min-width:0">machine</span><div class="chips" id="c-platform"></div></div>
 <div class="machine" id="machine"></div>
 <div class="chips" id="c-meas-metric"></div>
@@ -937,11 +888,11 @@ brainsort::sort_by(&amp;mut rows, |a, b| a.name.cmp(&amp;b.name));       // a co
 <ul>
 <li>Every (size, key type, input, algorithm) cell runs in a <b>fresh process</b>, pinned to one CPU where the OS allows it, so heap state and memory figures do not depend on what ran before.</li>
 <li>The input comes from a fixed seed and is the same for every algorithm. Every element carries its original position, so the harness can check the result: keys in order, no element lost or duplicated, and for a stable sort the exact order of equal keys.</li>
-<li><b>Deterministic numbers</b> come from one run of an instrumented build that counts every element read and write, every comparison, every table access and every allocation, and feeds the access sequence to a fixed cache model. The upstream code is counted through an element wrapper with the same definitions, so a swap is two reads and two writes for everyone.</li>
+<li><b>Deterministic numbers</b> come from one run of an instrumented build that counts every element read and write, every comparison, every table access and every allocation, and feeds the access sequence to a fixed cache model. The upstream code is counted through an element wrapper with the same definitions, so a swap is two reads and two writes for everyone, and through the global allocator (and, for Boost.Sort, its malloc calls) for scratch memory.</li>
 <!--cpp--><li><b>Measured numbers</b> come from repeated timed runs of the plain build: the median of the repetitions, and the best median of two rounds over the whole matrix, because interference can only make a run slower. Below 100,000 elements the timed region sorts enough independent copies to reach 100,000 elements and reports the time per sort, so the clock's own cost stays small. Above, the repetitions shrink in proportion, never below three.</li>
 <li>All algorithms are compiled with the same flags (<code>-O2</code>, no <code>-march=native</code>). brainsort chooses its AVX2 and BMI2 paths at run time.</li>
-<li><b>The library on plain vectors</b> is a separate benchmark: <code>brainsort::sort</code> on a <code>std::vector</code> against <code>std::sort</code>, <code>std::stable_sort</code> and pdqsort on the same generated inputs, the median of a few runs, every result checked, the same flags as above.</li><!--/cpp-->
-<!--rust--><li><b>The crate on plain vectors</b> is the timed measurement of the Rust crate: <code>brainsort::sort</code> on a <code>Vec</code> against the standard library's sorts and the radix crates as published on crates.io, on the same generated inputs as the C++ benchmark, the median of a few runs, every result checked. Everything is built by cargo in release mode with no target-cpu flags; brainsort chooses its AVX2 and BMI2 paths at run time. The algorithm-level harness with instrumented ports and hardware counters is C++ code and is on the C++ page; its deterministic counts above hold for the crate.</li>
+<li><b>The library on plain vectors</b> is a separate benchmark: <code>brainsort::sort</code> on a <code>std::vector</code> against <code>std::stable_sort</code>, cpp-TimSort and the two Boost.Sort stable sorts on the same generated inputs, the median of a few runs, every result checked, the same flags as above.</li><!--/cpp-->
+<!--rust--><li><b>The crate on plain vectors</b> is the timed measurement of the Rust crate: <code>brainsort::sort</code> on a <code>Vec</code> against the standard library's stable sorts and the glidesort crate as published on crates.io, on the same generated inputs as the C++ benchmark, the median of a few runs, every result checked. Everything is built by cargo in release mode with no target-cpu flags; brainsort chooses its AVX2 and BMI2 paths at run time. The algorithm-level harness with instrumented ports and hardware counters is C++ code and is on the C++ page; its deterministic counts above hold for the crate.</li>
 <li>Where both languages were measured on one machine, the same machine id pairs them, so a C++ and a Rust number side by side always come from the same computer.</li><!--/rust-->
 <li>Every timing file carries a fingerprint of the code it measured. This page is built from the current sources; a file that measured other code is left out, so no time on this page describes older code than the numbers next to it.</li>
 </ul>
@@ -966,8 +917,8 @@ python3 ../scripts/website.py                                    # both pages of
 </div>
 <h3>The algorithms</h3>
 <div class="tablewrap"><table class="data wrap" id="algos"></table></div>
-<!--cpp--><p class="note">"Best opponent" on this page means the best of the other sorts shown in a cell. The radix baselines are brainsort's own building blocks and never count as opponents, even when shown. Rust 1.81+ ships driftsort and ipnsort and CPython 3.11+ merges with powersort; neither is in this pool, so the deterministic numbers make no claim against them (the Rust page counts driftsort and ipnsort as shipped, on what a Rust program can observe). Our instrumented ports are 5% to 50% slower than the upstream code they follow, so the timed claims rest on the upstream code, and the ports are there to count what an in-place quicksort or a timsort does.</p><!--/cpp-->
-<!--rust--><p class="note">"Best opponent" on this page means the best of the other sorts shown in a cell. Every sort here is the published code, run unchanged: the deterministic numbers count what it asks of the program (comparisons, key reads, memory), the timed numbers what it costs. Element moves cannot be observed from outside in Rust, so bytes moved, reads, writes and the cache model are not counted for these sorts; the C++ page has them for the C++ pool.</p><!--/rust-->
+<!--cpp--><p class="note">"Best opponent" on this page means the best of the other sorts in a cell. Every sort here is upstream code run as shipped, counted through an element wrapper and the allocator; nothing is a port written here. The pool is the C++ sorts that can do what brainsort does: stable, every key type, an arbitrary comparator. std::sort, pdqsort and the radix libraries are not in it, because an unstable sort or a scalar-only radix sort has an easier job, so a comparison with them would not be like for like. Rust 1.81+ ships driftsort and CPython 3.11+ merges with powersort; the Rust page counts driftsort as shipped, on what a Rust program can observe.</p><!--/cpp-->
+<!--rust--><p class="note">"Best opponent" on this page means the best of the other sorts in a cell. Every sort here is the published code, run unchanged: the deterministic numbers count what it asks of the program (comparisons, key reads, memory), the timed numbers what it costs. The pool is the Rust sorts that can do what brainsort does: stable, every key type, an arbitrary comparator. slice::sort_unstable and the radix crates (radsort, voracious_radix_sort, rdst) are not in it, because an unstable sort or a scalar-only radix sort has an easier job, so a comparison with them would not be like for like; the Rust ecosystem has two such sorts, the standard library's and glidesort, and the cached-key form of the standard one is the route a program takes for a sort by key. Element moves cannot be observed from outside in Rust, so bytes moved, reads, writes and the cache model are not counted for these sorts; the C++ page has them for the C++ pool.</p><!--/rust-->
 <h3>The key types</h3>
 <div class="tablewrap"><table class="data wrap" id="types"></table></div>
 <h3>The inputs</h3>
@@ -1054,8 +1005,8 @@ const ALL_DET_METRICS = [
   { key: 'keybytes', label: 'Key bytes (strings)', unit: 'bytes', fmt: bytes, per: 'bytes', noun: 'key bytes', less: 'fewer',
     plain: 'For string keys: how many bytes of key text were loaded, by comparisons (up to the first differing byte) and by the radix chunk extraction. Zero for fixed-size keys.' },
   { key: 'keyreads', label: 'Key reads', unit: '', fmt: compact, per: '', noun: 'key reads', less: 'fewer',
-    plain: 'How often a radix crate asked an element for its key: once per element per pass for radsort and voracious_radix_sort, once per byte of the key for rdst. What these sorts do instead of comparing. Not counted for the comparison sorts, which never ask, nor for brainsort, whose key work is counted as table accesses on the C++ page.',
-    noContest: 'A number here is what a radix crate pays instead of comparisons, and only the radix crates pay it: the comparison sorts never ask for a key, and brainsort’s key work is counted in a different unit (table accesses, on the C++ page), so there is no contest to score. The full tables below carry the raw counts.' },
+    plain: 'How often slice::sort_by_cached_key asked an element for its key: once per element, before it sorts the keys with their indices. Not counted for the comparator sorts, which never ask, nor for brainsort, whose key work is counted as table accesses on the C++ page.',
+    noContest: 'A number here is the one pass over the keys the cached-key sort makes, and only it pays it: the comparator sorts never ask for a key, and brainsort’s key work is counted in a different unit (table accesses, on the C++ page), so there is no contest to score. The full tables below carry the raw counts.' },
   { key: 'table', label: 'Table accesses', unit: '', fmt: compact, per: '', noun: 'table accesses', less: 'fewer',
     plain: 'Reads and writes of the count tables a radix sort keeps: one small array per pass, touched once per element to count and once to place. Comparison sorts have none; this is what a radix sort pays instead of comparisons. Memory traffic counts these bytes next to the element traffic.',
     noContest: 'A large number here is not a loss, even though it looks like one. A radix sort touches a table of a few thousand entries a few times per element, and in exchange moves each element a few times instead of log n times and makes almost no comparisons. The table is capped at 13-bit digits, 32 KiB, so it stays in a first-level cache and each access is cheap. Every comparison sort has zero, so there is no contest to score. Memory traffic adds these table bytes to brainsort’s total and is the metric that decides; the full tables below carry the raw counts.' },
@@ -1075,16 +1026,14 @@ const MEAS_METRICS = [
     plain: 'How much the process’s peak resident memory grew during the sort, in whole pages. The practical memory cost, allocator behaviour included.' },
 ];
 const gcolor = g => `var(--c-${g})`;
-const color = a => gcolor(ALGO[a] ? ALGO[a].group : 'port');
-const GROUP_LABEL_ALL = { candidate: 'brainsort', upstream: 'upstream code, as shipped', port: 'our instrumented ports', baseline: 'radix baselines' };
-const GROUP_LABEL = LANG === 'cpp' ? GROUP_LABEL_ALL : { ...GROUP_LABEL_ALL, upstream: 'the Rust sorts, as shipped' };
-const DASH = { 'std::stable_sort': '', 'gfx::timsort': '6 3', 'timsort': '2 3', 'mergesort': '8 3 2 3', 'std::sort': '', 'orlp::pdqsort': '6 3', 'orlp::pdqsort_branchless': '2 3', 'introsort': '8 3 2 3', 'pdqsort': '10 4', 'heapsort': '1 3', 'radix11': '', 'radix16': '6 3', 'brainsort': '',
-  'slice::sort': '', 'radsort': '6 3', 'voracious_stable_sort': '2 3', 'slice::sort_unstable': '', 'voracious_sort': '8 3 2 3', 'rdst': '10 4' };
+const color = a => gcolor(ALGO[a] ? ALGO[a].group : 'upstream');
+const DASH = { 'brainsort': '', 'std::stable_sort': '', 'gfx::timsort': '6 3', 'boost::spinsort': '2 3', 'boost::flat_stable_sort': '8 3 2 3',
+  'slice::sort': '', 'slice::sort_by_cached_key': '6 3', 'glidesort': '2 3' };
 
 
 // ---- state ---------------------------------------------------------------------
 const state = {
-  n: REF_N, types: DATA.types.map(t => t.name), datasets: 'all', unstable: false, baselines: false,
+  n: REF_N, types: DATA.types.map(t => t.name), datasets: 'all',
   det: DET_METRICS[0].key, p: DATA.platforms.length ? DATA.platforms[0].id : '', meas: 'wall',
   benchP: BENCH.platforms.length ? BENCH.platforms[0].id : '', benchN: BENCH.sizes.includes(100000) ? 100000 : (BENCH.sizes[BENCH.sizes.length - 1] || 0),
   detDs: 'random', detBarT: DATA.types[0] ? DATA.types[0].name : '', detBarD: 'random',
@@ -1095,8 +1044,6 @@ function readHash() {
   const n = parseInt(q.get('n') || '', 10); if (DATA.sizes.includes(n)) state.n = n;
   const ty = q.get('type'); if (ty && ty !== 'all') { const l = ty.split(',').filter(x => DATA.types.some(t => t.name === x)); if (l.length) state.types = l; }
   if (q.get('inputs') === 'standard') state.datasets = 'standard';
-  if (q.get('unstable') === '1') state.unstable = true;
-  if (q.get('baselines') === '1') state.baselines = true;
   const dm = q.get('det'); if (DET_METRICS.some(m => m.key === dm)) state.det = dm;
   const mm = q.get('meas'); if (MEAS_METRICS.some(m => m.key === mm)) state.meas = mm;
   const p = q.get('machine'); if (PLAT[p]) state.p = p;
@@ -1109,8 +1056,6 @@ function writeHash() {
   if (state.n !== REF_N) q.set('n', state.n);
   if (state.types.length !== DATA.types.length) q.set('type', state.types.join(','));
   if (state.datasets !== 'all') q.set('inputs', 'standard');
-  if (state.unstable) q.set('unstable', '1');
-  if (state.baselines) q.set('baselines', '1');
   if (state.det !== DET_METRICS[0].key) q.set('det', state.det);
   if (state.meas !== 'wall') q.set('meas', state.meas);
   if (DATA.platforms.length && state.p !== DATA.platforms[0].id) q.set('machine', state.p);
@@ -1124,11 +1069,9 @@ function writeHash() {
 }
 const selTypes = () => DATA.types.filter(t => state.types.includes(t.name));
 const selDatasets = () => DATA.datasets.filter(d => state.datasets === 'all' || d.standard);
-// Shown algorithms: brainsort, then the stable sorts, then (if switched on) the unstable ones; baselines last.
-function shownAlgos() {
-  return DATA.algos.filter(a => a.name === DATA.candidate || (DATA.baselines.includes(a.name) ? state.baselines : (a.stable || state.unstable)));
-}
-const isOpponent = a => a !== DATA.candidate && !DATA.baselines.includes(a);
+// Shown algorithms: brainsort, then the others. Every sort of the pool is an opponent.
+function shownAlgos() { return DATA.algos; }
+const isOpponent = a => a !== DATA.candidate;
 const detMetric = () => DET_METRICS.find(m => m.key === state.det);
 const measMetric = () => MEAS_METRICS.find(m => m.key === state.meas);
 
@@ -1168,7 +1111,6 @@ function score(getFor) {
 const detGet = (n, t, d) => a => { const r = detRow(n, t, d, a); return r ? DET.get(r, state.det) : null; };
 const detGetM = (n, t, d, m) => a => { const r = detRow(n, t, d, a); return r ? DET.get(r, m) : null; };
 const timGet = (p, n, t, d, m) => a => { const r = timRow(p, n, t, d, a); return r && TIM.get(r, 'ok') ? TIM.get(r, m) : null; };
-const oppNoun = () => state.unstable ? 'sorts shown' : 'stable sorts';
 
 // ---- tiles, heat map, tables, charts (shared by both sections) --------------------
 function tiles(host, m, sc, extra, atN) {
@@ -1182,7 +1124,7 @@ function tiles(host, m, sc, extra, atN) {
   else if (sc.zeroLoss) { wc = m.fmt(sc.zeroLoss.c.b) + ' vs 0'; ws = `${sc.zeroLoss.c.opp} needs no ${m.noun} at all on ${sc.zeroLoss.t} ${sc.zeroLoss.d}, brainsort ${m.fmt(sc.zeroLoss.c.b)}`; }
   else if (sc.worst) { wc = lossPhrase(m, 1 / sc.worst.c.ratio); ws = `than ${sc.worst.c.opp} on ${sc.worst.t} ${sc.worst.d} (${m.fmt(sc.worst.c.b)} vs ${m.fmt(sc.worst.c.o)}${m.faster ? ', +' + ns(sc.worst.c.b - sc.worst.c.o) : ''})`; }
   host.innerHTML =
-    `<div class="tile hero ${sc.wins.length * 2 >= n ? 'win' : 'loss'}"><div class="k">${esc(m.label)}${extra ? ' · ' + esc(extra) : ''}</div><div class="v">${sc.wins.length} <small>of ${n} cells</small></div><div class="s">where brainsort is ${m.faster ? 'fastest' : 'lowest'} or tied among the ${esc(oppNoun())}, at n = ${fmtN(atN || state.n)}</div></div>` +
+    `<div class="tile hero ${sc.wins.length * 2 >= n ? 'win' : 'loss'}"><div class="k">${esc(m.label)}${extra ? ' · ' + esc(extra) : ''}</div><div class="v">${sc.wins.length} <small>of ${n} cells</small></div><div class="s">where brainsort is ${m.faster ? 'fastest' : 'lowest'} or tied against every other sort, at n = ${fmtN(atN || state.n)}</div></div>` +
     `<div class="tile"><div class="k">Biggest win</div><div class="v">${esc(bw)}</div><div class="s">${esc(bs)}</div></div>` +
     `<div class="tile"><div class="k">Worst loss</div><div class="v">${esc(wc)}</div><div class="s">${esc(ws)}</div></div>`;
 }
@@ -1199,13 +1141,8 @@ function heat(host, m, getFor, tipKind, n) {
   }
   host.innerHTML = h + '</tbody>';
 }
-function stabilityGroups() {
-  const all = shownAlgos(), cand = all.filter(a => a.name === DATA.candidate);
-  const g = [{ key: 'stable', label: 'stable sorts', algos: [...cand, ...all.filter(a => a.name !== DATA.candidate && a.stable)] }];
-  const un = all.filter(a => a.name !== DATA.candidate && !a.stable);
-  if (un.length) g.push({ key: 'unstable', label: 'unstable sorts, with brainsort for reference (it has the harder, stable job)', algos: [...cand, ...un] });
-  return g;
-}
+// One group: every sort of the pool is stable, so there is nothing to separate.
+function stabilityGroups() { return [{ key: 'all', label: 'every sort', algos: shownAlgos() }]; }
 function matrixTables(host, m, getFor, summaryEl) {
   let h = '';
   for (const t of selTypes()) {
@@ -1220,7 +1157,7 @@ function matrixTables(host, m, getFor, summaryEl) {
         rows += `<tr><td title="${esc(d.description)}">${esc(d.name)}</td>` + vals.map((v, i) => v == null ? '<td class="muted">n/a</td>' :
           `<td class="${v === best ? 'best' : ''}">${esc(m.fmt(v))}<span class="rel">${v === best ? 'best' : best === 0 ? '' : (v / best).toFixed(2) + 'x'}</span></td>`).join('') + '</tr>';
       }
-      if (any) h += `<h4>${esc(t.name)} · ${esc(g.label)}</h4><div class="tablewrap"><table class="data"><thead><tr><th>input</th>` +
+      if (any) h += `<h4>${esc(t.name)}</h4><div class="tablewrap"><table class="data"><thead><tr><th>input</th>` +
         g.algos.map(a => `<th><span class="sw" style="background:${color(a.name)}"></span>${esc(a.name)}</th>`).join('') + `</tr></thead><tbody>${rows}</tbody></table></div>`;
     }
   }
@@ -1313,8 +1250,6 @@ function refresh() {
     it => it.id === 'all' ? state.types.length === DATA.types.length : state.types.length === 1 && state.types[0] === it.id,
     it => { state.types = it.id === 'all' ? DATA.types.map(t => t.name) : [it.id]; });
   chips(document.getElementById('c-datasets'), [{ id: 'standard', label: 'the 5 standard inputs' }, { id: 'all', label: 'all ' + DATA.datasets.length + ' inputs' }], it => state.datasets === it.id, it => { state.datasets = it.id; });
-  chips(document.getElementById('c-groups'), [{ id: 'unstable', label: 'unstable sorts', title: (LANG === 'cpp' ? 'std::sort, pdqsort, introsort, heapsort' : 'slice::sort_unstable, voracious_sort, rdst') + ': they need not keep equal keys in order' }, { id: 'baselines', label: 'radix baselines', title: 'textbook LSD radix sorts: brainsort’s building blocks, never counted as opponents' }].filter(g => g.id !== 'baselines' || DATA.baselines.length),
-    it => state[it.id], it => { state[it.id] = !state[it.id]; });
   chips(document.getElementById('c-det-metric'), DET_METRICS.map(m => ({ id: m.key, label: m.label, title: m.plain })), it => state.det === it.id, it => { state.det = it.id; });
   chips(document.getElementById('c-platform'), DATA.platforms.map(p => ({ id: p.id, label: p.label + (p.shared ? '' : ' ★'), title: (p.cpu || '') + (p.host ? ', ' + p.host : '') })), it => state.p === it.id, it => { state.p = it.id; });
   const p = PLAT[state.p];
@@ -1365,55 +1300,52 @@ function renderHeader() {
 }
 function renderGlance() {
   const n = detN(), nt = state.n;
-  // Deterministic, against the stable sorts, all inputs, all types: the honest core claim.
-  const saveUn = state.unstable, saveBase = state.baselines, saveTypes = state.types, saveDs = state.datasets;
-  state.unstable = false; state.baselines = false; state.types = DATA.types.map(t => t.name); state.datasets = 'all';
+  // Deterministic, against every other sort, all inputs, all types: the core claim.
+  const saveTypes = state.types, saveDs = state.datasets;
+  state.types = DATA.types.map(t => t.name); state.datasets = 'all';
   const GL = LANG === 'cpp' ? ['traffic', 'compares', 'aux'] : ['compares', 'aux', 'flips'];   // the page's headline metrics, the first the hero
-  const stableScores = {}; for (const k of GL) stableScores[k] = score((t, d) => detGetM(n, t, d, k));
-  state.unstable = true;
-  const allScores = {}; for (const k of GL) allScores[k] = score((t, d) => detGetM(n, t, d, k));
-  // Measured wall time per machine, stable and all.
-  const measStable = [], measAll = [];
+  const scores = {}; for (const k of GL) scores[k] = score((t, d) => detGetM(n, t, d, k));
+  // Measured wall time per machine.
+  const meas = [];
   for (const p of LANG === 'cpp' ? DATA.platforms : []) {
-    state.unstable = false; const s1 = score((t, d) => timGet(p.id, nt, t, d, 'wall'));
-    state.unstable = true; const s2 = score((t, d) => timGet(p.id, nt, t, d, 'wall'));
-    if (s1.cells.length) { measStable.push({ p, s: s1 }); measAll.push({ p, s: s2 }); }
+    const s1 = score((t, d) => timGet(p.id, nt, t, d, 'wall'));
+    if (s1.cells.length) meas.push({ p, s: s1 });
   }
-  state.unstable = saveUn; state.baselines = saveBase; state.types = saveTypes; state.datasets = saveDs;
-  const cells = stableScores[GL[0]].cells.length;
+  state.types = saveTypes; state.datasets = saveDs;
+  const cells = scores[GL[0]].cells.length;
   const tiles = [];
   const REF = LANG === 'cpp' ? 'std::stable_sort' : 'slice::sort';   // the standard library's stable sort of the page
   const rnd = detRow(n, 'int32', 'random', DATA.candidate), srt = detRow(n, 'int32', 'random', REF);
   const TILE = {
-    traffic: ['Bytes moved', 'cells in which brainsort moves the fewest bytes of every stable sort', ''],
-    compares: ['Comparisons', 'cells with the fewest comparisons of every stable sort', LANG === 'rust' ? '. The radix crates make none and brainsort’s scout pass makes one per element, so brainsort loses most of these cells to them and wins them against slice::sort' : ''],
-    aux: ['Scratch memory', 'cells with the least scratch memory of every stable sort', (rnd && srt ? `; on random int32 brainsort asks for ${bytes(DET.get(rnd, 'aux'))} and ${REF} for ${bytes(DET.get(srt, 'aux'))}` : '') + '. The in-place unstable sorts always use none.'],
-    flips: ['Compare flips', 'cells with the fewest changes of comparison outcome of every stable sort, a machine-independent proxy for mispredicted branches', LANG === 'rust' ? '. The radix crates have none' : ''],
+    traffic: ['Bytes moved', 'cells in which brainsort moves the fewest bytes of every sort', ''],
+    compares: ['Comparisons', 'cells with the fewest comparisons of every sort', LANG === 'rust' ? '. brainsort’s scout pass makes one per element; the others compare to sort' : ''],
+    aux: ['Scratch memory', 'cells with the least scratch memory of every sort', (rnd && srt ? `; on random int32 brainsort asks for ${bytes(DET.get(rnd, 'aux'))} and ${REF} for ${bytes(DET.get(srt, 'aux'))}` : '') + (LANG === 'cpp' ? '. boost::flat_stable_sort gets by on n/256 + 8 KiB' : '')],
+    flips: ['Compare flips', 'cells with the fewest changes of comparison outcome of every sort, a machine-independent proxy for mispredicted branches', ''],
   };
   GL.forEach((k, i) => {
-    const sc = stableScores[k], all = allScores[k], [label, what, tail] = TILE[k];
-    tiles.push(`<div class="tile ${i === 0 ? 'hero ' : ''}${sc.wins.length * 2 >= cells ? 'win' : 'loss'}"><div class="k">${label} <span class="tag det">deterministic</span></div><div class="v">${sc.wins.length} <small>of ${cells}</small></div><div class="s">${what}; ${all.wins.length} of ${all.cells.length} counting the unstable sorts too${tail}</div></div>`);
+    const sc = scores[k], [label, what, tail] = TILE[k];
+    tiles.push(`<div class="tile ${i === 0 ? 'hero ' : ''}${sc.wins.length * 2 >= cells ? 'win' : 'loss'}"><div class="k">${label} <span class="tag det">deterministic</span></div><div class="v">${sc.wins.length} <small>of ${cells}</small></div><div class="s">${what}${tail}</div></div>`);
   });
-  if (measStable.length) {
-    const ws = measStable.map(x => x.s.wins.length), wa = measAll.map(x => x.s.wins.length), tot = measStable[0].s.cells.length;
+  if (meas.length) {
+    const ws = meas.map(x => x.s.wins.length), tot = meas[0].s.cells.length;
     const rng = a => Math.min(...a) === Math.max(...a) ? String(a[0]) : `${Math.min(...a)} to ${Math.max(...a)}`;
-    tiles.push(`<div class="tile"><div class="k">Wall time <span class="tag">measured</span></div><div class="v">${esc(rng(ws))} <small>of ${tot}</small></div><div class="s">cells in which brainsort is the fastest stable sort at n = ${fmtN(nt)}, across ${measStable.length} machine${measStable.length === 1 ? '' : 's'}; ${esc(rng(wa))} of ${tot} against all sorts. Per machine below.</div></div>`);
+    tiles.push(`<div class="tile"><div class="k">Wall time <span class="tag">measured</span></div><div class="v">${esc(rng(ws))} <small>of ${tot}</small></div><div class="s">cells in which brainsort is the fastest sort at n = ${fmtN(nt)}, across ${meas.length} machine${meas.length === 1 ? '' : 's'}. Per machine below.</div></div>`);
   }
   // The public call on a plain vector, per machine.
   const bn = BENCH.sizes.includes(nt) ? nt : benchDefaultN(), bs = BENCH.platforms.map(p => benchScore(p.id, bn)).filter(x => x.cells);
   if (bs.length) {
     const rng = a => Math.min(...a) === Math.max(...a) ? String(a[0]) : `${Math.min(...a)} to ${Math.max(...a)}`;
-    tiles.push(`<div class="tile"><div class="k">${LANG === 'cpp' ? 'On plain vectors' : 'The crate on plain vectors'} <span class="tag">measured</span></div><div class="v">${esc(rng(bs.map(x => x.wins)))} <small>of ${bs[0].cells}</small></div><div class="s">cells in which <code>brainsort::sort</code> on a plain ${LANG === 'cpp' ? '<code>std::vector</code>' : '<code>Vec</code>'} is the fastest of every ${LANG_NAME[LANG]} sort measured (${esc(BENCH.opponents.join(', '))}) at n = ${fmtN(bn)}, across ${bs.length} machine${bs.length === 1 ? '' : 's'}; ${esc(rng(bs.map(x => x.winsSt)))} of ${bs[0].cells} against <code>${esc(BENCH.opponents[BENCH.stable])}</code> alone, the other stable sort. <a href="#api">Per machine below.</a></div></div>`);
+    tiles.push(`<div class="tile"><div class="k">${LANG === 'cpp' ? 'On plain vectors' : 'The crate on plain vectors'} <span class="tag">measured</span></div><div class="v">${esc(rng(bs.map(x => x.wins)))} <small>of ${bs[0].cells}</small></div><div class="s">cells in which <code>brainsort::sort</code> on a plain ${LANG === 'cpp' ? '<code>std::vector</code>' : '<code>Vec</code>'} is the fastest of every ${LANG_NAME[LANG]} sort measured (${esc(BENCH.opponents.join(', '))}) at n = ${fmtN(bn)}, across ${bs.length} machine${bs.length === 1 ? '' : 's'}; ${esc(rng(bs.map(x => x.winsSt)))} of ${bs[0].cells} against <code>${esc(BENCH.opponents[BENCH.std])}</code> alone, the standard library's. <a href="#api">Per machine below.</a></div></div>`);
   }
   document.getElementById('glance-tiles').innerHTML = tiles.join('');
-  const r1 = detRow(n, 'int32', 'random', DATA.candidate), rp = detRow(n, 'int32', 'random', LANG === 'cpp' ? 'orlp::pdqsort_branchless' : 'slice::sort');
+  const r1 = detRow(n, 'int32', 'random', DATA.candidate), rp = detRow(n, 'int32', 'random', REF);
   document.getElementById('glance-text').innerHTML = LANG === 'cpp' ?
     `brainsort is a <b>stable</b> sort that avoids comparing keys wherever the key type allows it, and does less work when the input already has structure. ` +
-    `On random keys it moves a fraction of the bytes a merge sort or a quicksort moves${r1 && rp ? ` (${bytes(DET.get(r1, 'traffic'))} against ${bytes(DET.get(rp, 'traffic'))} for branchless pdqsort on ${fmtN(n)} random int32 keys)` : ''} and makes almost no comparisons. ` +
-    `It pays for that with scratch memory of about half the array, and it does not win everywhere: on input that is already sorted or has only a handful of distinct values, the adaptive comparison sorts finish in one pass and brainsort’s scout pass costs a little extra. Every such case is on this page.` :
+    `On random keys it moves a fraction of the bytes a merge sort moves${r1 && rp ? ` (${bytes(DET.get(r1, 'traffic'))} against ${bytes(DET.get(rp, 'traffic'))} for std::stable_sort on ${fmtN(n)} random int32 keys)` : ''} and makes almost no comparisons. ` +
+    `It pays for that with scratch memory of about half the array, and it does not win everywhere: on input that is already sorted or has only a handful of distinct values, the adaptive comparison sorts finish in one pass and brainsort’s scout pass costs a little extra. Every such case is on this page. Every other sort here is stable, upstream code as shipped, and takes every key type and any comparator: the sorts that can do what brainsort does.` :
     `The crate is a <b>stable</b> sort that avoids comparing keys wherever the key type allows it, and does less work when the input already has structure. ` +
-    `On random keys it makes almost no comparisons${r1 && rp ? ` (${compact(DET.get(r1, 'compares'))} against ${compact(DET.get(rp, 'compares'))} for slice::sort on ${fmtN(n)} random int32 keys)` : ''}, like the radix crates, and unlike them it stays stable on every key type and wins on input with structure. ` +
-    `It pays with scratch memory of about half the array. Bytes moved, its strongest number, cannot be counted of the Rust sorts as shipped, so that comparison is on <a href="index.html">the C++ page</a>, where the crate’s own counts are exactly the C++ library’s. Every case where brainsort loses is on this page.`;
+    `On random keys it makes almost no comparisons${r1 && rp ? ` (${compact(DET.get(r1, 'compares'))} against ${compact(DET.get(rp, 'compares'))} for slice::sort on ${fmtN(n)} random int32 keys)` : ''} and wins on input with structure. ` +
+    `It pays with scratch memory of about half the array. Bytes moved, its strongest number, cannot be counted of the Rust sorts as shipped, so that comparison is on <a href="index.html">the C++ page</a>, where the crate’s own counts are exactly the C++ library’s. Every case where brainsort loses is on this page. Every other sort here is stable, published code as shipped, and takes every key type and any comparator: the sorts that can do what brainsort does.`;
   document.getElementById('glance-note').textContent = `The tiles count every key type and every input pattern: ${cells} cells at n = ${fmtN(n)}${n !== nt ? ` for the deterministic numbers (no counted run at ${fmtN(nt)} in this build of the page)` : ''}. Change the size in the controls below to see another. A cell counts as a win when brainsort is best or tied.`;
 }
 
@@ -1423,7 +1355,7 @@ function renderDet() {
   document.getElementById('det-fallback').innerHTML = n === state.n ? '' :
     `<div class="callout warn">No counted run at ${fmtN(state.n)} elements is in this build of the page (scripts/counts.sh with COUNTS_SIZES=${state.n} adds one; at ten million that is over an hour of counting). The deterministic numbers below are at ${fmtN(n)}; the measured section has the ${fmtN(state.n)} timing.</div>`;
   document.getElementById('det-metric-note').textContent = m.plain + ' Lower is better.';
-  // A cost only brainsort and the radix baselines pay: no win/loss score, no heat map, no charts; the full tables still list it.
+  // A cost only one side pays: no win/loss score, no heat map, no charts; the full tables still list it.
   document.getElementById('det-contest').hidden = !!m.noContest;
   const nc = document.getElementById('det-nocontest'); nc.hidden = !m.noContest; nc.textContent = m.noContest || '';
   const wrap = document.getElementById('det-tables-wrap');
@@ -1434,7 +1366,7 @@ function renderDet() {
   }
   const sc = score((t, d) => detGet(n, t, d));
   tiles(document.getElementById('det-tiles'), m, sc, '', n);
-  document.getElementById('det-heat-note').textContent = `${m.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s, at n = ${fmtN(n)}. Hover a cell for the numbers.`;
+  document.getElementById('det-heat-note').textContent = `${m.label} of the best other sort divided by brainsort’s, at n = ${fmtN(n)}. Hover a cell for the numbers.`;
   heat(document.getElementById('det-heat'), m, (t, d) => detGet(n, t, d), 'det', n);
   document.getElementById('det-sizes-note').textContent = `${m.label} divided by the number of elements, as the input grows. A flat line is linear work; a rising line is the n log n of a comparison sort or a cache effect. Every size has its own instrumented run.`;
   sizesCharts(document.getElementById('det-sizes'), m, (nn, t, a) => { const r = detRow(nn, t, state.detDs, a); return r ? DET.get(r, state.det) : null; }, `${state.detDs} input`);
@@ -1465,7 +1397,7 @@ function renderMeas() {
   const n = state.n;
   const sc = score((t, d) => timGet(p.id, n, t, d, mm.key));
   tiles(document.getElementById('meas-tiles'), mm, sc, p.label, n);
-  document.getElementById('meas-heat-note').textContent = `${mm.label} of the best other ${oppNoun().replace('sorts shown', 'sort shown').replace('stable sorts', 'stable sort')} divided by brainsort’s on ${p.label}, n = ${fmtN(n)}. Hover a cell for the numbers.`;
+  document.getElementById('meas-heat-note').textContent = `${mm.label} of the best other sort divided by brainsort’s on ${p.label}, n = ${fmtN(n)}. Hover a cell for the numbers.`;
   heat(document.getElementById('meas-heat'), mm, (t, d) => timGet(p.id, n, t, d, mm.key), 'meas', n);
   document.getElementById('meas-sizes-note').textContent = `${mm.label} per element as the input grows, on ${p.label}. Small inputs sit in the cache and cost few nanoseconds per element; large ones pay for memory bandwidth.`;
   sizesCharts(document.getElementById('meas-sizes'), mm, (nn, t, a) => timGet(p.id, nn, t, state.measDs, mm.key)(a), `${state.measDs} input, ${p.label}`);
@@ -1475,7 +1407,7 @@ function renderMeas() {
   if (wrap.open) matrixTables(document.getElementById('meas-tables'), mm, (t, d) => timGet(p.id, n, t, d, mm.key), document.getElementById('meas-tables-sum'));
   else document.getElementById('meas-tables-sum').textContent = ` ${mm.label.toLowerCase()}, n = ${fmtN(n)}, ${p.label}`;
   // Every machine: wins of wall time, and the random-input speed-up per key type.
-  document.getElementById('allplat-note').textContent = `Wall time at n = ${fmtN(n)} on every machine: how many cells brainsort wins against the ${oppNoun()}, and by how much it beats (or trails) the best other sort on random input, per key type. Quiet workstations are marked ★.`;
+  document.getElementById('allplat-note').textContent = `Wall time at n = ${fmtN(n)} on every machine: how many cells brainsort wins against every other sort, and by how much it beats (or trails) the best other sort on random input, per key type. Quiet workstations are marked ★.`;
   let h = '<thead><tr><th>machine</th><th>CPU</th><th>fastest or tied</th>' + selTypes().map(t => `<th>random ${esc(t.name)}</th>`).join('') + '</tr></thead><tbody>';
   for (const q of DATA.platforms) {
     const s = score((t, d) => timGet(q.id, n, t, d, 'wall'));
@@ -1487,13 +1419,13 @@ function renderMeas() {
 }
 
 // ---- the public call on a plain vector: this page's language, per machine --------------------
-// One cell: brainsort against the best other sort measured; `st` is the like-for-like stable one.
+// One cell: brainsort against the best other sort measured; `st` is the standard library's.
 function benchCmp(r) {
   if (!r) return null;
   const b = BT.get(r, 'bs'), others = BT.get(r, 'others');
   const os = others.map((v, i) => [BENCH.opponents[i], v]).filter(x => x[1] != null).sort((x, y) => x[1] - y[1]);
   if (!os.length) return null;
-  return { b, o: os[0][1], opp: os[0][0], win: b <= os[0][1], ratio: os[0][1] / b, st: others[BENCH.stable] };
+  return { b, o: os[0][1], opp: os[0][0], win: b <= os[0][1], ratio: os[0][1] / b, st: others[BENCH.std] };
 }
 function benchScore(pid, n) {
   let cells = 0, wins = 0, winsSt = 0;
@@ -1508,14 +1440,14 @@ function renderBench() {
   const p = BPLAT[state.benchP]; if (!p) return;
   const n = state.benchN;
   document.getElementById('api-intro').innerHTML = LANG === 'cpp' ?
-    `What a user of the library gets: <code>brainsort::sort(v)</code> on a plain <code>std::vector&lt;T&gt;</code> against <code>std::sort</code>, <code>std::stable_sort</code> and <code>pdqsort</code> on the same vector, wall time, every result checked. This includes everything the API adds on top of the algorithm: building the key records, permuting the elements afterwards, and allocating and freeing memory on every call (the harness above keeps its memory warm across repetitions; a single call pays page faults). Sizes: ${B.sizes.map(fmtN).join(', ')} elements. Note that std::sort and pdqsort are unstable sorts; std::stable_sort is the like-for-like comparison, and brainsort's comparator overload is a plain merge sort, so the comparator rows show what the library does when it cannot use keys.` :
-    `What a user of the crate gets: <code>brainsort::sort(&amp;mut v)</code> on a plain <code>Vec&lt;T&gt;</code> against the Rust ecosystem as shipped: <code>slice::sort</code> (the standard library's stable sort, driftsort), <code>slice::sort_unstable</code> (ipnsort), and the radix crates <code>radsort</code> (stable), <code>voracious_radix_sort</code> (stable and unstable) and <code>rdst</code> (unstable, single-threaded here) where they support the key type. Wall time, every result checked, the same generated inputs and sizes as the C++ benchmark. This includes everything the API adds on top of the algorithm: building the key records, permuting the elements afterwards, and allocating and freeing memory on every call. Sizes: ${B.sizes.map(fmtN).join(', ')} elements. Note that ipnsort, rdst and the unstable voracious sort need not keep equal keys in order and radsort sorts only scalar keys; the standard stable sort is the like-for-like comparison on every type, and brainsort's <code>sort_by</code> is a plain merge sort, so the comparator rows show what the crate does when it cannot use keys. This is the one timed measurement of the crate: the algorithm-level harness with instrumented ports and hardware counters is C++ code and is on <a href="index.html">the C++ page</a>; its deterministic counts above hold for the crate.`;
+    `What a user of the library gets: <code>brainsort::sort(v)</code> on a plain <code>std::vector&lt;T&gt;</code> against ${B.opponents.map(o => '<code>' + esc(o) + '</code>').join(', ')} on the same vector, wall time, every result checked. This includes everything the API adds on top of the algorithm: building the key records, permuting the elements afterwards, and allocating and freeing memory on every call (the harness above keeps its memory warm across repetitions; a single call pays page faults). Sizes: ${B.sizes.map(fmtN).join(', ')} elements. Every opponent is stable upstream code called with the same comparator; brainsort's comparator overload is the library's own comparison sort, so the comparator rows show what the library does when it cannot use keys.` :
+    `What a user of the crate gets: <code>brainsort::sort(&amp;mut v)</code> on a plain <code>Vec&lt;T&gt;</code> against the stable Rust sorts as shipped: <code>slice::sort</code> (the standard library's stable sort, driftsort), <code>slice::sort_by_cached_key</code> (the same sort on a buffer of keys and indices, the standard route for a sort by key; not on strings, whose key would be the string itself) and the <code>glidesort</code> crate. Wall time, every result checked, the same generated inputs and sizes as the C++ benchmark. This includes everything the API adds on top of the algorithm: building the key records, permuting the elements afterwards, and allocating and freeing memory on every call. Sizes: ${B.sizes.map(fmtN).join(', ')} elements. brainsort's <code>sort_by</code> is the crate's own comparison sort, so the comparator rows show what the crate does when it cannot use keys. This is the one timed measurement of the crate: the algorithm-level harness with hardware counters is C++ code and is on <a href="index.html">the C++ page</a>; its deterministic counts above hold for the crate.`;
   document.getElementById('api-machine').innerHTML = `<b>${esc(p.label)}</b>${p.shared ? '' : ' ★'} · ${esc(p.cpu || '')}${p.compiler ? ' · ' + esc(p.compiler) : ''} · median of ${esc(String(p.reps || '?'))} runs · measured ${esc(timeStamp(p.measured))}${p.stale === 'stale' ? ' <span class="tag bad">stale</span>' : ''}`;
   const cs = []; for (const t of B.types) for (const d of B.datasets) { const c = benchCmp(benchRow(p.id, t.name, n, d)); if (c) cs.push({ t: t.name, d, c }); }
   const wins = cs.filter(x => x.c.win), winsSt = cs.filter(x => x.c.st != null && x.c.b <= x.c.st);
   const best = wins.filter(x => x.c.ratio > 1.05).sort((a, b) => b.c.ratio - a.c.ratio)[0], worst = cs.filter(x => !x.c.win).sort((a, b) => a.c.ratio - b.c.ratio)[0];
   document.getElementById('api-tiles').innerHTML = cs.length ?
-    `<div class="tile ${wins.length * 2 >= cs.length ? 'win' : 'loss'}"><div class="k">Fastest or tied · n = ${fmtN(n)}</div><div class="v">${wins.length} <small>of ${cs.length}</small></div><div class="s">cells where brainsort::sort beats or ties every other ${LANG_NAME[LANG]} sort measured; ${winsSt.length} of ${cs.length} against ${esc(B.opponents[B.stable])} alone, the other stable sort</div></div>` +
+    `<div class="tile ${wins.length * 2 >= cs.length ? 'win' : 'loss'}"><div class="k">Fastest or tied · n = ${fmtN(n)}</div><div class="v">${wins.length} <small>of ${cs.length}</small></div><div class="s">cells where brainsort::sort beats or ties every other ${LANG_NAME[LANG]} sort measured; ${winsSt.length} of ${cs.length} against ${esc(B.opponents[B.std])} alone, the standard library's</div></div>` +
     `<div class="tile"><div class="k">Biggest win</div><div class="v">${best ? best.c.ratio.toFixed(1) + 'x faster' : 'none'}</div><div class="s">${best ? `than ${esc(best.c.opp)} on ${esc(best.t)} ${esc(best.d)} (${fmtMs(best.c.b)} vs ${fmtMs(best.c.o)} ms)` : 'brainsort::sort is never ahead here'}</div></div>` +
     `<div class="tile"><div class="k">Worst loss</div><div class="v">${worst ? (1 / worst.c.ratio).toFixed(2) + 'x slower' : 'none'}</div><div class="s">${worst ? `than ${esc(worst.c.opp)} on ${esc(worst.t)} ${esc(worst.d)} (${fmtMs(worst.c.b)} vs ${fmtMs(worst.c.o)} ms)` : 'fastest or tied in every cell'}</div></div>` :
     '<div class="tile empty">nothing measured at this size on this machine</div>';
@@ -1647,7 +1579,7 @@ const tip = document.getElementById('tip');
 function showTip(html) { tip.innerHTML = html; tip.hidden = false; }
 function oppRows(get, m) {
   return shownAlgos().map(a => ({ a: a.name, v: get(a.name) })).filter(x => x.v != null).sort((x, y) => x.v - y.v)
-    .map(x => `<tr><td><span class="sw" style="background:${color(x.a)}"></span>${esc(x.a)}${isOpponent(x.a) ? '' : x.a === DATA.candidate ? '' : ' (baseline)'}</td><td>${esc(m.fmt(x.v))}</td></tr>`).join('');
+    .map(x => `<tr><td><span class="sw" style="background:${color(x.a)}"></span>${esc(x.a)}</td><td>${esc(m.fmt(x.v))}</td></tr>`).join('');
 }
 document.addEventListener('mouseover', e => {
   const g = e.target.closest && e.target.closest('[data-tip]'); if (!g) return;

@@ -66,12 +66,10 @@ be anything: they are permuted once, after the keys were sorted.
 
 ## Results in short
 
-On plain vectors against the Rust ecosystem as shipped (`slice::sort`,
-`slice::sort_unstable`, `radsort`, `voracious_radix_sort`, `rdst`), on the
-website's machines: brainsort wins on nearly sorted, few-unique, string and
-struct inputs by two to four times over the standard sorts, ties the radix
-crates on random 64-bit keys, and loses to the specialised radix crates on
-random 32-bit keys and to the standard sorts on input that is already
+On plain vectors against the stable Rust sorts as shipped (`slice::sort`,
+`slice::sort_by_cached_key`, `glidesort`), on the website's machines:
+brainsort wins on random, nearly sorted, few-unique, string and struct
+inputs, most by two to four times, and loses on input that is already
 sorted, where its first pass over the keys costs more than theirs. Every
 cell is on the website with the machine and the commit it was measured on.
 

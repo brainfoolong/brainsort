@@ -23,8 +23,8 @@ pub mod timing;
 // allocations. brainsort's counted view arms it too, so its row in
 // rust-counts.csv is measured like every other sort's and the check holds
 // it to the trace's own accounting. Armed per thread: the sorts run on the
-// calling thread, and a thread pool a crate keeps (rdst starts one on its
-// first call) must not be able to add its own start-up allocations.
+// calling thread, cargo test runs tests in parallel, and a thread a crate
+// might start must not be able to add its own allocations.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

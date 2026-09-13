@@ -339,7 +339,6 @@ void print_usage() {
         "  --algo NAME      restrict to one algorithm (repeatable)\n"
         "  --dataset NAME   restrict to one dataset (repeatable; default: the 5 primary ones)\n"
         "  --all-datasets   use every dataset\n"
-        "  --all-algos      include the candidate sorts and the std:: references\n"
         "  --pin CPU        pin the measuring thread to CPU (default: auto, -1 disables)\n"
         "  --counts-only    no timing: one counted run per cell, only the deterministic columns\n"
         "                   are filled (results/counts.csv is made this way)\n"
@@ -373,7 +372,6 @@ int main(int argc, char** argv) {
     uint64_t seed    = 20260912;
     int      pin     = default_pin_cpu();
     bool     no_fork = false;
-    bool     all_algos = false;
     bool     all_datasets = false;
     bool     all_types = false;
     bool     counts_only = false;
@@ -400,7 +398,6 @@ int main(int argc, char** argv) {
         else if (a == "--id")       id = need("--id");
         else if (a == "--host")     host = need("--host");
         else if (a == "--no-fork")  no_fork = true;
-        else if (a == "--all-algos") all_algos = true;
         else if (a == "--all-datasets") all_datasets = true;
         else if (a == "--all-types") all_types = true;
         else if (a == "--counts-only") counts_only = true;
@@ -451,8 +448,7 @@ int main(int argc, char** argv) {
                 if (std::find(ti.algo_names.begin(), ti.algo_names.end(), a) != ti.algo_names.end()) selected.push_back(a);
                 else std::fprintf(stderr, "note: algorithm %s not available for type %s\n", a.c_str(), type.c_str());
         } else {
-            const size_t count = all_algos ? ti.algo_names.size() : std::min(kPrimaryAlgorithmCount, ti.algo_names.size());
-            for (size_t i = 0; i < count; ++i) selected.push_back(ti.algo_names[i]);
+            selected = ti.algo_names;
         }
         algos_by_type[type] = selected;
     }

@@ -29,7 +29,7 @@ $apiMax = if ($env:BENCH_API_MAX_N) { $env:BENCH_API_MAX_N } else { "100000" }
 New-Item -ItemType Directory -Force results | Out-Null
 
 Write-Host "== timing: results\$id.csv"
-& $sb --all-types --all-algos --all-datasets --timing-only @sizes --reps $reps --rounds 1 --id $id --host $hostText --csv "results\$id.csv" @args
+& $sb --all-types --all-datasets --timing-only @sizes --reps $reps --rounds 1 --id $id --host $hostText --csv "results\$id.csv" @args
 if ($LASTEXITCODE -ne 0) { throw "benchmark failed" }
 
 Write-Host "== public API: results\$id.api.md"
