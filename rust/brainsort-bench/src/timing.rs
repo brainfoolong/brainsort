@@ -24,6 +24,8 @@ impl Default for Row {
         Row { key: 0, payload: [0; 56] }
     }
 }
+// SAFETY: an i64 and 56 bytes, no padding.
+unsafe impl brainsort::PlainBytes for Row {}
 impl rdst::RadixKey for Row {
     const LEVELS: usize = 8;
     #[inline]
@@ -266,9 +268,10 @@ fn bench_type<T: Opponents>(sizes: &[usize], reps: usize, out: &mut Vec<Cell>, m
     }
 }
 
-/// A comparator on the elements: brainsort's `sort_by` against the
-/// standard library's two comparator sorts.
-fn bench_comparator<T: BenchKey>(name: &'static str, sizes: &[usize], reps: usize, out: &mut Vec<Cell>, mut log: impl FnMut(&Cell)) {
+/// A comparator on the elements: brainsort's `sort_by`, or with `infer`
+/// its `sort_by_inferred`, against the standard library's two comparator
+/// sorts.
+fn bench_comparator<T: BenchKey + brainsort::PlainBytes>(name: &'static str, infer: bool, sizes: &[usize], reps: usize, out: &mut Vec<Cell>, mut log: impl FnMut(&Cell)) {
     for &n in sizes {
         if name.starts_with("64-byte") && n > 1_000_000 {
             continue;
@@ -284,7 +287,7 @@ fn bench_comparator<T: BenchKey>(name: &'static str, sizes: &[usize], reps: usiz
                     std::cmp::Ordering::Equal
                 }
             };
-            let bs = median_ms(&input, reps, |v| brainsort::sort_by(v, cmp));
+            let bs = if infer { median_ms(&input, reps, |v| brainsort::sort_by_inferred(v, cmp)) } else { median_ms(&input, reps, |v| brainsort::sort_by(v, cmp)) };
             let ss = median_ms(&input, reps, |v| v.sort_by(cmp));
             let su = median_ms(&input, reps, |v| v.sort_unstable_by(cmp));
             let cell = Cell { ty: name, n, ds, brainsort: bs, others: vec![Some(ss), Some(su), None, None, None, None] };
@@ -302,8 +305,10 @@ pub fn run_all(sizes: &[usize], reps: usize, mut log: impl FnMut(&Cell)) -> Vec<
     bench_type::<f64>(sizes, reps, &mut out, &mut log);
     bench_type::<String>(sizes, reps, &mut out, &mut log);
     bench_type::<Row>(sizes, reps, &mut out, &mut log);
-    bench_comparator::<i32>("i32 by comparator", sizes, reps, &mut out, &mut log);
-    bench_comparator::<Row>("64-byte struct by i64 by comparator", sizes, reps, &mut out, &mut log);
+    bench_comparator::<i32>("i32 by comparator", false, sizes, reps, &mut out, &mut log);
+    bench_comparator::<Row>("64-byte struct by i64 by comparator", false, sizes, reps, &mut out, &mut log);
+    bench_comparator::<i32>("i32 by comparator, inferred", true, sizes, reps, &mut out, &mut log);
+    bench_comparator::<Row>("64-byte struct by i64 by comparator, inferred", true, sizes, reps, &mut out, &mut log);
     out
 }
 

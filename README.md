@@ -235,7 +235,16 @@ plain 32-bit numbers are written back from their records. Nearly sorted
 large elements are permuted by following cycles, which moves only the
 elements that are out of place.
 
-A comparator gets the library's stable comparison sort (the same pass over
+A comparator on trivially copyable elements, from 4,096 of them on, first
+has its key inferred: the comparator is asked about a sample of adjacent
+pairs, every aligned
+window of the element (an integer or a float of 8 to 64 bits, ascending or
+descending) is tested against the answers, and a window that agrees with
+all of them is sorted as a key, the result checked with one more comparator
+pass and runs of equal elements put back into input order. A comparator
+that is the order of a field gets the radix sort this way; one that is not
+costs a sample and at worst a verification pass, and the range, still
+untouched, goes to the library's stable comparison sort (the same pass over
 the elements first; then long natural runs are merged as they are, and
 anything else is partitioned through a buffer, stable and without a branch,
 with the elements equal to a repeated pivot stripped off in one pass, down
@@ -243,7 +252,8 @@ to ranges of 512 that are merge sorted from branch-free sorts of sixteen).
 Elements of up to 16 bytes are sorted in place; larger ones through an
 index array and one permutation at the end. It runs on trivially copyable
 elements behind a contiguous iterator; other elements go to
-`std::stable_sort`.
+`std::stable_sort`. The Rust crate offers the inference as
+`sort_by_inferred` on elements that declare themselves free of padding.
 
 ### Key types
 

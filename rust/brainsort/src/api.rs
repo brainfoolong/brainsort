@@ -23,6 +23,10 @@ pub const ELEMENT_ROUTE_MAX: usize = 16;
 /// The comparator sort, which has no records to fall back on, sorts
 /// nearly sorted elements up to this size in place (the C++ has no limit).
 pub const COMPARATOR_ROUTE_MAX: usize = 64;
+/// Below this many elements the key a comparator compares is not
+/// inferred: the sample, the records and the check cost more than the
+/// comparison sort of a small slice saves (level at about 5,000 elements).
+pub const INFER_MIN: usize = 4096;
 const PRESCAN_BLOCK: usize = 256;
 
 // ---- projections --------------------------------------------------------------------------
@@ -957,7 +961,7 @@ pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut 
         // to COMPARATOR_ROUTE_MAX bytes and gave up; larger elements get
         // that route on the indices.
         let try_displaced = nearly && core::mem::size_of::<T>() > COMPARATOR_ROUTE_MAX;
-        if sort_by_indices::<T, A, F>(v, &mut cmp, nearly, try_displaced) {
+        if sort_by_indices::<T, A, F>(v, &mut cmp, nearly, try_displaced, true) {
             return;
         }
     }
@@ -971,8 +975,9 @@ pub fn sort_by_impl<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], mut 
 /// bytes per element instead of the element, and a comparator that panics
 /// leaves the slice untouched, because nothing moves before the last
 /// comparison. False, with the slice untouched, if the index array cannot
-/// be allocated.
-fn sort_by_indices<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: &mut F, sparse: bool, try_displaced: bool) -> bool {
+/// be allocated, or, without `fallback`, if the displaced-element route
+/// was the only one asked for and gave up.
+pub(crate) fn sort_by_indices<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: &mut F, sparse: bool, try_displaced: bool, fallback: bool) -> bool {
     let n = v.len();
     let Ok(idx) = Buf::<u32, A>::new(n) else {
         return false;
@@ -990,6 +995,9 @@ fn sort_by_indices<T, A: Alloc, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: 
     // function.
     let indices = unsafe { core::slice::from_raw_parts_mut(ix, n) };
     if !(try_displaced && sort_displaced_elements::<u32, A, _>(indices, |i, j| ord3(order(i, j)))) {
+        if !fallback {
+            return false;
+        }
         indices.sort_by(order);
     }
     permute::<T, *mut u32, A>(v, ix, n, sparse);

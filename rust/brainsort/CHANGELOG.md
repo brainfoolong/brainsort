@@ -6,6 +6,18 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- `sort_by_inferred` and the `PlainBytes` trait: a comparator sort that
+  guesses the key the comparator compares (an aligned window of the
+  element read as an integer or a float, ascending or descending) from a
+  sample of its answers, sorts by that key and verifies the result with
+  one comparator pass, falling back to `sort_by` on the untouched slice
+  when no window agrees; the same result as `sort_by` on every input, and
+  `sort_by` itself below 4,096 elements. Primitive numbers and arrays of
+  them are `PlainBytes`; a struct without padding opts in with `unsafe
+  impl`. At 100,000 elements (7800X3D, Windows) against `sort_by`: `i32`
+  random 1.23 to 0.61 ms, from 0.72x of `slice::sort_unstable_by` to 1.5x
+  ahead; 64-byte rows by comparator random 2.4 to 1.5 ms; on WSL2 1.22 to
+  0.59 ms and 2.4 to 1.4 ms.
 - `sort` on a plain slice of 64-bit keys (`i64`, `u64`, `isize`, `usize`,
   `f64`, raw pointers, any `Key` whose radix form inverts) sorts the keys
   themselves, 8 bytes per element instead of a 16-byte record with an

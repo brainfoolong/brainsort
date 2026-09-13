@@ -115,8 +115,8 @@ API_TYPES = {
     "double": "std::vector<double>",
     "std::string": "std::vector<std::string> of random 3 to 12 letter words",
     "64-byte struct by int64": "std::vector of a 64-byte struct, sorted by its int64_t field (brainsort by projection, the others by comparator)",
-    "int32_t by comparator": "std::vector<int32_t>, every sort called with a comparator: brainsort's own merge sort against the others",
-    "64-byte struct by int64 by comparator": "std::vector of a 64-byte struct, every sort called with a comparator on its int64_t field",
+    "int32_t by comparator": "std::vector<int32_t>, every sort called with a comparator; brainsort infers the key the comparator compares and verifies it",
+    "64-byte struct by int64 by comparator": "std::vector of a 64-byte struct, every sort called with a comparator on its int64_t field; brainsort infers the key",
 }
 
 
@@ -304,8 +304,10 @@ RUST_API_TYPES = {
     "f64": "Vec<f64>",
     "String": "Vec<String> of random 3 to 12 letter words",
     "64-byte struct by i64": "Vec of a 64-byte struct, sorted by its i64 field (brainsort by key, the others by comparator)",
-    "i32 by comparator": "Vec<i32>, every sort called with a comparator: brainsort's own merge sort against the others",
-    "64-byte struct by i64 by comparator": "Vec of a 64-byte struct, every sort called with a comparator on its i64 field",
+    "i32 by comparator": "Vec<i32>, every sort called with a comparator: brainsort's sort_by, the comparison sort, against the others",
+    "64-byte struct by i64 by comparator": "Vec of a 64-byte struct, every sort called with a comparator on its i64 field: brainsort's sort_by",
+    "i32 by comparator, inferred": "Vec<i32>, every sort called with a comparator: brainsort's sort_by_inferred, which infers the key the comparator compares and verifies it",
+    "64-byte struct by i64 by comparator, inferred": "Vec of a 64-byte struct, every sort called with a comparator on its i64 field: brainsort's sort_by_inferred",
 }
 
 # C++ API benchmark type -> Rust API benchmark type: the cells the two

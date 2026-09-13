@@ -416,6 +416,48 @@ fn comparator_paths() {
     verify(&v, 5000, "comparator on String elements");
 }
 
+/// `sort_by_inferred`: the same result as `sort_by` whether the comparator
+/// is a window of the element, coarser than one, only agrees with one on
+/// the sample, or is no window at all.
+#[test]
+fn inferred_comparator() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    #[repr(C)]
+    struct Mixed {
+        score: f64,
+        id: u32,
+        group: i32,
+    }
+    // SAFETY: 8 + 4 + 4 bytes, no padding.
+    unsafe impl brainsort::PlainBytes for Mixed {}
+    let mut rng = Rng::new(23);
+    let big = if quick() { 10_000 } else { 100_000 };
+    for n in [40usize, 300, 5000, big] {
+        let v: Vec<Mixed> = (0..n).map(|i| Mixed { score: (rng.next() % 100_000) as f64 / 7.0 - 5000.0, id: i as u32, group: (rng.next() % 50) as i32 }).collect();
+        let same = |cmp: &dyn Fn(&Mixed, &Mixed) -> Ordering, ctx: &str| {
+            let mut a = v.clone();
+            let mut b = v.clone();
+            brainsort::sort_by_inferred(&mut a, cmp);
+            b.sort_by(cmp);
+            assert_eq!(a, b, "{ctx} n={n}: sort_by_inferred differs from a stable sort");
+        };
+        same(&|a, b| a.score.total_cmp(&b.score), "f64 field");
+        same(&|a, b| b.score.total_cmp(&a.score), "f64 field descending");
+        same(&|a, b| a.group.cmp(&b.group), "i32 field with ties");
+        same(&|a, b| (a.group / 10).cmp(&(b.group / 10)), "coarse comparator");
+        same(&|a, b| a.group.cmp(&b.group).then(b.score.total_cmp(&a.score)), "two fields");
+        same(&|a, b| a.score.abs().total_cmp(&b.score.abs()), "not a window");
+        // agrees with the field on every pair but those with one rare value
+        let k = |g: i32| if g == 42 { i32::MAX } else { g };
+        same(&|a, b| k(a.group).cmp(&k(b.group)), "adversarial comparator");
+    }
+    let mut ints: Vec<i64> = (0..50_000).map(|_| rng.next() as i64 % 1000).collect();
+    let mut w = ints.clone();
+    brainsort::sort_by_inferred(&mut ints, |a, b| b.cmp(a));
+    w.sort_by(|a, b| b.cmp(a));
+    assert_eq!(ints, w, "i64 descending");
+}
+
 #[test]
 fn random_shapes() {
     let mut rng = Rng::new(2026);

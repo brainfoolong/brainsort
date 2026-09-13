@@ -59,13 +59,22 @@ brainsort::sort(rows, [](const Row& a, const Row& b) { return a.name < b.name; }
 brainsort::sort_with(rows, [](const Row& a, const Row& b) { return a.id > b.id; });
 ```
 
-A comparator gets a comparison sort: the library's own on trivially
-copyable elements (a stable partition sort that merges long runs as they
-are and strips repeated values in one pass; elements over 16 bytes are
-sorted through an index array and moved once), `std::stable_sort`
-otherwise. It is stable and handles sorted, reversed and nearly sorted
-input in place, but it has none of the radix wins; prefer a key whenever
-the order is one.
+A comparator on trivially copyable elements, from 4,096 of them on, first
+has its key inferred: the library asks it about a sample of adjacent pairs, looks for an
+aligned window of the element (an integer or a floating-point number of
+8 to 64 bits, ascending or descending) whose order agrees with every
+answer, sorts by that window as a key and checks the result with one
+more comparator pass, putting runs the comparator calls equal back into
+input order. A comparator that is the order of a field thus gets the
+radix sort; one that is not (the check fails, or no window agrees) costs
+a sample and at worst one verification pass, and the range, still
+untouched, goes to the library's comparison sort: a stable partition sort
+that merges long runs as they are and strips repeated values in one
+pass, with elements over 16 bytes sorted through an index array and
+moved once. Elements that are not trivially copyable go to
+`std::stable_sort`. Every path is stable and handles sorted, reversed and
+nearly sorted input in place; prefer a key whenever you have one, it
+skips the guessing.
 
 `brainsort::stable_sort` is an alias of `brainsort::sort` for code that
 replaces `std::stable_sort` by name.

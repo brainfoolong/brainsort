@@ -27,6 +27,8 @@ brainsort::sort_by_key(&mut rows, |r| r.id);                     // by a key
 brainsort::sort_by_key_ref(&mut rows, |r| r.name.as_str());      // by a borrowed key
 brainsort::sort_by_key(&mut rows, |r| (r.id, brainsort::Desc(r.score)));
 brainsort::sort_by(&mut rows, |a, b| a.name.cmp(&b.name));       // a comparator
+let mut ids = vec![3u64, 1, 2];
+brainsort::sort_by_inferred(&mut ids, |a, b| b.cmp(a));          // a comparator whose key is inferred
 ```
 
 Every sort is stable. Keys can be any integer, `bool`, `char`, `f32`,
@@ -51,6 +53,9 @@ be anything: they are permuted once, after the keys were sorted.
 - **A comparator** gets the standard library's stable sort, with sorted,
   reversed and nearly sorted input handled on the elements first; elements
   over 16 bytes are sorted through indices and moved once.
+  `sort_by_inferred` first guesses the window of the element the
+  comparator compares, from a sample of its answers, sorts by it as a key
+  and verifies; the elements must be `PlainBytes` (no padding).
 - **Allocation failure** completes the sort through the standard library's
   stable sort with the same order. A key function that panics during the
   first pass leaves the slice unchanged; later, every element is still in

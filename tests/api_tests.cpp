@@ -728,6 +728,56 @@ void test_allocation_failure() {
     std::printf("%-40s %s\n", "allocation failure and exceptions", g_failures == failures_before ? "ok" : "FAILED");
 }
 
+// ---- key inference -----------------------------------------------------------------------
+// A comparator that is the order of a window of the element is found and
+// verified; one that only agrees on the sample is caught by the check; one
+// that is coarser than the window keeps its equal elements in input order.
+struct Padded {   // 24 bytes with 11 of padding: no padding window may be believed
+    int8_t   tag;
+    int64_t  key;
+    uint32_t id;
+};
+struct Mixed {
+    double   score;
+    uint32_t id;
+    int32_t  group;
+};
+template <class T, class Comp>
+void same_as_stable(const std::vector<T>& in, Comp comp, const std::string& ctx) {
+    std::vector<T> a = in, b = in;
+    brainsort::sort(a, comp);
+    std::stable_sort(b.begin(), b.end(), comp);
+    bool same = a.size() == b.size();
+    for (size_t i = 0; same && i < a.size(); ++i) same = a[i].id == b[i].id;
+    CHECK(same, ctx + ": brainsort::sort(comparator) differs from std::stable_sort");
+}
+void test_inference(size_t big) {
+    const int failures_before = g_failures;
+    std::mt19937_64 rng(23);
+    for (size_t n : {size_t{40}, size_t{300}, size_t{5000}, big}) {
+        std::vector<Padded> p;
+        std::vector<Mixed>  m;
+        for (size_t i = 0; i < n; ++i) {
+            p.push_back({static_cast<int8_t>(rng()), static_cast<int64_t>(rng() % 20000) - 10000, static_cast<uint32_t>(i)});
+            m.push_back({static_cast<double>(rng() % 100000) / 7.0 - 5000.0, static_cast<uint32_t>(i), static_cast<int32_t>(rng() % 50)});
+        }
+        const std::string at = " n=" + std::to_string(n);
+        same_as_stable(p, [](const Padded& a, const Padded& b) { return a.key < b.key; }, "int64 field" + at);
+        same_as_stable(p, [](const Padded& a, const Padded& b) { return b.key < a.key; }, "int64 field descending" + at);
+        same_as_stable(p, [](const Padded& a, const Padded& b) { return a.key / 100 < b.key / 100; }, "coarse comparator" + at);
+        same_as_stable(p, [](const Padded& a, const Padded& b) { return a.tag < b.tag; }, "int8 field" + at);
+        // agrees with the key on every pair but those with one rare value: the verification must catch it
+        same_as_stable(p, [](const Padded& a, const Padded& b) {
+            auto k = [](int64_t v) { return v == 4242 ? INT64_MAX : v; };
+            return k(a.key) < k(b.key);
+        }, "adversarial comparator" + at);
+        same_as_stable(m, [](const Mixed& a, const Mixed& b) { return a.score < b.score; }, "double field" + at);
+        same_as_stable(m, [](const Mixed& a, const Mixed& b) { return a.group != b.group ? a.group < b.group : a.score > b.score; }, "two fields" + at);
+        same_as_stable(m, [](const Mixed& a, const Mixed& b) { return std::abs(a.score) < std::abs(b.score); }, "not a window" + at);
+    }
+    std::printf("%-40s %s\n", "key inference", g_failures == failures_before ? "ok" : "FAILED");
+}
+
 // ---- the comparator overloads ------------------------------------------------------------
 // The same checks as for keys, on every pattern and size: the merge sort,
 // the in-place routes for ordered input, the small sort, the std::stable_sort
@@ -1039,6 +1089,7 @@ int main(int argc, char** argv) {
     test_containers();
     test_allocation_failure();
     test_comparator(big);
+    test_inference(big);
     test_threads();
     test_random_shapes();
     if (!quick) test_large();

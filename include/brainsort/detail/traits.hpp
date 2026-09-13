@@ -37,6 +37,8 @@
 #include <cstring>
 #include <mutex>
 #include <new>
+#include <type_traits>
+#include <utility>
 
 namespace brainsort {
 
@@ -214,6 +216,37 @@ public:
 private:
     T*     p_;
     size_t n_;
+};
+
+// An array of n objects of type U in memory from Alloc. For trivially
+// constructible U it is raw storage; otherwise objects are constructed one
+// by one with emplace() and destroyed in the destructor.
+template <class U, class Alloc>
+class Buf {
+public:
+    explicit Buf(size_t n) : n_(n), built_(0) {
+        p_ = static_cast<U*>(Alloc::allocate(n * sizeof(U)));
+        if constexpr (std::is_trivially_default_constructible_v<U>) built_ = n;
+    }
+    ~Buf() {
+        if constexpr (!std::is_trivially_destructible_v<U>)
+            for (size_t i = built_; i-- > 0;) p_[i].~U();
+        Alloc::deallocate(p_, n_ * sizeof(U));
+    }
+    Buf(const Buf&) = delete;
+    Buf& operator=(const Buf&) = delete;
+    template <class... Args> U& emplace(Args&&... args) {
+        U* u = ::new (static_cast<void*>(p_ + built_)) U(std::forward<Args>(args)...);
+        ++built_;
+        return *u;
+    }
+    U*     data() const noexcept { return p_; }
+    size_t size() const noexcept { return n_; }
+    U&     operator[](size_t i) const noexcept { return p_[i]; }
+private:
+    U*     p_;
+    size_t n_;
+    size_t built_;
 };
 
 // ---- scratch buffers -----------------------------------------------------------------

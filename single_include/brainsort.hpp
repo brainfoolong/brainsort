@@ -344,6 +344,8 @@ inline const CacheSizes& cache_sizes() noexcept {
 #include <cstring>
 #include <mutex>
 #include <new>
+#include <type_traits>
+#include <utility>
 
 namespace brainsort {
 
@@ -521,6 +523,37 @@ public:
 private:
     T*     p_;
     size_t n_;
+};
+
+// An array of n objects of type U in memory from Alloc. For trivially
+// constructible U it is raw storage; otherwise objects are constructed one
+// by one with emplace() and destroyed in the destructor.
+template <class U, class Alloc>
+class Buf {
+public:
+    explicit Buf(size_t n) : n_(n), built_(0) {
+        p_ = static_cast<U*>(Alloc::allocate(n * sizeof(U)));
+        if constexpr (std::is_trivially_default_constructible_v<U>) built_ = n;
+    }
+    ~Buf() {
+        if constexpr (!std::is_trivially_destructible_v<U>)
+            for (size_t i = built_; i-- > 0;) p_[i].~U();
+        Alloc::deallocate(p_, n_ * sizeof(U));
+    }
+    Buf(const Buf&) = delete;
+    Buf& operator=(const Buf&) = delete;
+    template <class... Args> U& emplace(Args&&... args) {
+        U* u = ::new (static_cast<void*>(p_ + built_)) U(std::forward<Args>(args)...);
+        ++built_;
+        return *u;
+    }
+    U*     data() const noexcept { return p_; }
+    size_t size() const noexcept { return n_; }
+    U&     operator[](size_t i) const noexcept { return p_[i]; }
+private:
+    U*     p_;
+    size_t n_;
+    size_t built_;
 };
 
 // ---- scratch buffers -----------------------------------------------------------------
@@ -3850,6 +3883,20 @@ inline void stable_comparison_sort(T* a, size_t n, Comp& comp) {
 }  // namespace detail
 }  // namespace brainsort
 
+// ======== brainsort/detail/infer.hpp ========
+// brainsort: key inference for the comparator overloads.
+//
+// A comparator is a black box, but a trivially copyable element is not.
+// The sort guesses that the comparator is the order of some aligned window
+// of the element's bytes, read as an integer or a float, ascending or
+// descending. Every such window is tested against a strided sample of
+// adjacent-pair outcomes of the comparator; a window that agrees with all
+// of them is sorted by the record path, the result is gathered into a
+// buffer and verified with one sequential comparator pass. Equal runs are
+// the comparator's equality classes, and sorting each by original index
+// restores stability even when the window is finer than the comparator.
+// Only a comparator that disagrees in direction somewhere fails the guess;
+// the range is then still untouched and goes to the comparison sort.
 // ======== brainsort/detail/keys.hpp ========
 // brainsort: key adapters.
 //
@@ -4577,6 +4624,200 @@ inline double double_of(const Key64& r) noexcept {
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
+
+namespace brainsort {
+namespace detail {
+namespace infer_detail {
+
+// Adjacent pairs the comparator is asked about before a window is chosen.
+constexpr size_t kSamplePairs = 2048;
+
+enum class Kind : uint8_t { i8, u8, i16, u16, i32, u32, f32, i64, u64, f64 };
+// Widest first: among the windows that agree with the sample the widest wins.
+constexpr Kind kKinds[10] = {Kind::i64, Kind::u64, Kind::f64, Kind::i32, Kind::u32, Kind::f32, Kind::i16, Kind::u16, Kind::i8, Kind::u8};
+constexpr size_t kind_size(Kind k) {
+    switch (k) {
+        case Kind::i8: case Kind::u8: return 1;
+        case Kind::i16: case Kind::u16: return 2;
+        case Kind::i32: case Kind::u32: case Kind::f32: return 4;
+        default: return 8;
+    }
+}
+constexpr bool kind_wide(Kind k) { return kind_size(k) == 8; }
+constexpr bool kind_float(Kind k) { return k == Kind::f32 || k == Kind::f64; }
+constexpr bool kind_signed(Kind k) { return k == Kind::i8 || k == Kind::i16 || k == Kind::i32 || k == Kind::i64; }
+
+template <class U> inline U load(const unsigned char* q) noexcept {
+    U u;
+    std::memcpy(&u, q, sizeof u);
+    return u;
+}
+
+// A candidate key: a window of the element read as `kind`, possibly descending.
+struct Cand {
+    size_t off  = 0;
+    Kind   kind = Kind::i64;
+    bool   desc = false;
+
+    // The order-preserving radix value of the window of the element at p: 32
+    // bits wide for the narrow kinds, 64 for the wide ones.
+    uint64_t radix(const unsigned char* p) const noexcept {
+        const unsigned char* q = p + off;
+        uint64_t r;
+        switch (kind) {
+            case Kind::i8:  r = static_cast<uint32_t>(static_cast<int32_t>(load<int8_t>(q))) ^ 0x80000000u; break;
+            case Kind::u8:  r = load<uint8_t>(q); break;
+            case Kind::i16: r = static_cast<uint32_t>(static_cast<int32_t>(load<int16_t>(q))) ^ 0x80000000u; break;
+            case Kind::u16: r = load<uint16_t>(q); break;
+            case Kind::i32: r = static_cast<uint32_t>(load<int32_t>(q)) ^ 0x80000000u; break;
+            case Kind::u32: r = load<uint32_t>(q); break;
+            case Kind::f32: r = key_traits<float>::to_radix(load<float>(q)); break;
+            case Kind::i64: return finish64(static_cast<uint64_t>(load<int64_t>(q)) ^ 0x8000000000000000ull);
+            case Kind::u64: return finish64(load<uint64_t>(q));
+            default:        return finish64(key_traits<double>::to_radix(load<double>(q)));
+        }
+        return desc ? static_cast<uint32_t>(~static_cast<uint32_t>(r)) : r;
+    }
+    uint64_t finish64(uint64_t r) const noexcept { return desc ? ~r : r; }
+
+    // A float window is believed only if no sampled value is a denormal:
+    // integers read as floats are denormals, floats in use never are.
+    template <class T>
+    bool float_plausible(const T* v, size_t n, size_t stride) const noexcept {
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(v);
+        for (size_t i = 0; i < n; i += stride) {
+            const unsigned char* q = p + i * sizeof(T) + off;
+            bool denormal;
+            if (kind == Kind::f32) {
+                const uint32_t b = load<uint32_t>(q);
+                denormal = (b & 0x7F800000u) == 0 && (b & 0x007FFFFFu) != 0;
+            } else {
+                const uint64_t b = load<uint64_t>(q);
+                denormal = (b & 0x7FF0000000000000ull) == 0 && (b & 0x000FFFFFFFFFFFFFull) != 0;
+            }
+            if (denormal) return false;
+        }
+        return true;
+    }
+};
+
+// The three-way outcome of a `less` comparator on a pair.
+template <class T, class Comp>
+inline int order3(const T& a, const T& b, Comp& comp) {
+    return comp(a, b) ? -1 : (comp(b, a) ? 1 : 0);
+}
+
+// The window that agrees with every sampled comparator outcome, if any;
+// among several, the widest, then a plausible float, then signed, then
+// unsigned.
+template <class Alloc, class T, class Comp>
+inline bool infer(const T* v, size_t n, Comp& comp, Cand& best) {
+    constexpr size_t sz = sizeof(T);
+    if (n < 2) return false;
+    const size_t pairs  = std::min(kSamplePairs, n - 1);
+    const size_t stride = (n - 1) / pairs;
+    struct Outcome { uint32_t i; int o; };
+    Buf<Outcome, Alloc> outcomes(pairs);   // pair (i, i + 1) for i = k * stride
+    bool any = false;
+    for (size_t k = 0; k < pairs; ++k) {
+        const size_t i = k * stride;
+        outcomes[k] = {static_cast<uint32_t>(i), order3(v[i], v[i + 1], comp)};
+        any |= outcomes[k].o != 0;
+    }
+    if (!any) return false;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(v);
+    unsigned best_score = 0;
+    bool     found      = false;
+    for (Kind kind : kKinds) {
+        const size_t ks = kind_size(kind);
+        if (ks > sz) continue;
+        for (size_t off = 0; off + ks <= sz; off += ks) {
+            for (bool desc : {false, true}) {
+                const Cand c{off, kind, desc};
+                bool agrees = true;
+                for (size_t k = 0; agrees && k < pairs; ++k) {
+                    const uint64_t a = c.radix(p + outcomes[k].i * sz), b = c.radix(p + (outcomes[k].i + 1) * sz);
+                    agrees = (a < b ? -1 : (a > b ? 1 : 0)) == outcomes[k].o;
+                }
+                if (!agrees) continue;
+                const unsigned score = static_cast<unsigned>(ks) * 10 +
+                                       (kind_float(kind) ? (c.float_plausible(v, n, std::max<size_t>(stride, 1)) ? 3u : 0u) : (kind_signed(kind) ? 2u : 1u));
+                if (!found || score > best_score) { best = c; best_score = score; found = true; }
+            }
+        }
+    }
+    return found;
+}
+
+// Sorts v[0,n) by the candidate through records of type Rec, verifies the
+// gathered result with the comparator and restores stability inside equal
+// runs. False, with the range untouched, when the comparator disagrees with
+// the candidate somewhere.
+template <class Alloc, class Rec, class T, class Comp>
+inline bool sort_verified(T* v, size_t n, const Cand& c, Comp& comp) {
+    constexpr size_t sz = sizeof(T);
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(v);
+    Buf<Rec, Alloc> recs(n);
+    Rec* rec = recs.data();
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t r = c.radix(p + i * sz);
+        if constexpr (std::is_same_v<Rec, Rec64>) rec[i] = Rec64{static_cast<int64_t>(r ^ 0x8000000000000000ull), static_cast<uint32_t>(i), 0};
+        else rec[i] = Rec32{static_cast<int32_t>(static_cast<uint32_t>(r) ^ 0x80000000u), static_cast<uint32_t>(i)};
+    }
+    brain_detail::Scratch<View<Rec, Alloc>> scratch;
+    if (!brainsort_impl<0>(View<Rec, Alloc>(rec, n), scratch, true)) rec = scratch.buffer();
+    Buf<T, Alloc> tmp(n);
+    T* t = tmp.data();
+    for (size_t i = 0; i < n; ++i) t[i] = v[rec[i].idx];
+    // The equal run [s, e) is a class of the comparator: its elements go
+    // into index order.
+    auto fix_run = [&](size_t s, size_t e) {
+        bool ordered = true;
+        for (size_t i = s + 1; ordered && i < e; ++i) ordered = rec[i - 1].idx < rec[i].idx;
+        if (ordered) return;
+        std::sort(rec + s, rec + e, [](const Rec& a, const Rec& b) { return a.idx < b.idx; });
+        for (size_t i = s; i < e; ++i) t[i] = v[rec[i].idx];
+    };
+    size_t s = 0;
+    for (size_t i = 1; i < n; ++i) {
+        if (comp(t[i - 1], t[i])) {            // less: the common case, one call
+            if (i - s > 1) fix_run(s, i);
+            s = i;
+        } else if (comp(t[i], t[i - 1])) {     // greater: the guess was wrong
+            return false;
+        }
+    }
+    if (n - s > 1) fix_run(s, n);
+    std::memcpy(static_cast<void*>(v), t, n * sizeof(T));
+    return true;
+}
+
+}  // namespace infer_detail
+
+// The comparator sort with key inference: true when the range was sorted
+// through an inferred window, false (range untouched) when no window agrees
+// with the comparator, or when memory ran out.
+template <class Alloc, class T, class Comp>
+inline bool sort_inferred(T* v, size_t n, Comp& comp) {
+    infer_detail::Cand c;
+    try {
+        if (!infer_detail::infer<Alloc>(v, n, comp, c)) return false;
+        if (infer_detail::kind_wide(c.kind)) return infer_detail::sort_verified<Alloc, Rec64>(v, n, c, comp);
+        return infer_detail::sort_verified<Alloc, Rec32>(v, n, c, comp);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
+}  // namespace detail
+}  // namespace brainsort
+
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <new>
@@ -4595,37 +4836,10 @@ constexpr size_t kSmallSort = 32;
 // ones through the records, where moving only the out-of-place elements is
 // cheaper than rewriting every element once.
 constexpr size_t kElementRouteMax = 16;
-
-// An array of n objects of type U in memory from Alloc. For trivially
-// constructible U it is raw storage; otherwise objects are constructed one
-// by one with emplace() and destroyed in the destructor.
-template <class U, class Alloc>
-class Buf {
-public:
-    explicit Buf(size_t n) : n_(n), built_(0) {
-        p_ = static_cast<U*>(Alloc::allocate(n * sizeof(U)));
-        if constexpr (std::is_trivially_default_constructible_v<U>) built_ = n;
-    }
-    ~Buf() {
-        if constexpr (!std::is_trivially_destructible_v<U>)
-            for (size_t i = built_; i-- > 0;) p_[i].~U();
-        Alloc::deallocate(p_, n_ * sizeof(U));
-    }
-    Buf(const Buf&) = delete;
-    Buf& operator=(const Buf&) = delete;
-    template <class... Args> U& emplace(Args&&... args) {
-        U* u = ::new (static_cast<void*>(p_ + built_)) U(std::forward<Args>(args)...);
-        ++built_;
-        return *u;
-    }
-    U*     data() const noexcept { return p_; }
-    size_t size() const noexcept { return n_; }
-    U&     operator[](size_t i) const noexcept { return p_[i]; }
-private:
-    U*     p_;
-    size_t n_;
-    size_t built_;
-};
+// Below this many elements the key a comparator compares is not inferred:
+// the sample, the records and the check cost more than the comparison sort
+// of a small range saves (level at about 5,000 elements).
+constexpr size_t kInferMin = 4096;
 
 // Thrown internally when a key cannot be represented as a record.
 struct unrepresentable_key {};
@@ -5236,25 +5450,30 @@ inline void permute_indices(T* p, uint32_t* idx, size_t n, bool sparse) {
 // displaced-element route when the input is nearly sorted, the comparison
 // sort otherwise), and the elements are permuted once at the end. The
 // passes move 4-byte indices instead of the elements, and a comparator
-// that throws leaves the elements untouched.
+// that throws leaves the elements untouched. Without `fallback` only the
+// displaced-element route is tried: false, range untouched, when it gives up.
 template <class Alloc, class T, class Comp>
-inline void sort_with_indices(T* p, size_t n, Comp& comp, bool nearly) {
+inline bool sort_with_indices(T* p, size_t n, Comp& comp, bool nearly, bool fallback) {
     Buf<uint32_t, Alloc> idx(n);
     uint32_t* const i = idx.data();
     for (size_t k = 0; k < n; ++k) i[k] = static_cast<uint32_t>(k);
     if (!nearly || !sort_displaced_elements<Alloc>(i, n, IndexOrder<T, Comp>{p, &comp})) {
+        if (!fallback) return false;
         IndexLess<T, Comp> less{p, &comp};
         stable_comparison_sort<Alloc>(i, n, less);
     }
     permute_indices<Alloc>(p, i, n, nearly);
+    return true;
 }
 
 // The comparator overloads: sorted, reversed and nearly sorted input are
-// handled on the elements like the key overloads do, everything else goes to
-// the comparison sort of detail/compsort.hpp, on the elements themselves up
-// to kElementRouteMax bytes and through an index array beyond. Elements
-// that are not trivially copyable, or not behind a contiguous iterator, go
-// to std::stable_sort.
+// handled on the elements like the key overloads do; then the key the
+// comparator compares is inferred (detail/infer.hpp) and, when a window of
+// the element agrees with it, the range is sorted by that key and verified;
+// everything else goes to the comparison sort of detail/compsort.hpp, on
+// the elements themselves up to kElementRouteMax bytes and through an index
+// array beyond. Elements that are not trivially copyable, or not behind a
+// contiguous iterator, go to std::stable_sort.
 template <class Alloc, class It, class Comp>
 inline void sort_with_impl(It first, It last, Comp comp) {
     using T = std::iter_value_t<It>;
@@ -5269,14 +5488,21 @@ inline void sort_with_impl(It first, It last, Comp comp) {
         const Prescan s = prescan_comp(first, n, comp);
         if (s.shape == Shape::sorted) return;
         if (s.shape == Shape::reversed) { reverse_stable_comp(first, n, comp, s); return; }
-        const bool nearly = s.shape == Shape::nearly_sorted;
+        const bool nearly  = s.shape == Shape::nearly_sorted;
+        const bool indexed = n <= 0xFFFFFFFFull;
         try {
+            // nearly sorted input: the displaced elements, in place or on indices
             if constexpr (sizeof(T) <= kElementRouteMax) {
                 if (nearly && sort_displaced_elements<Alloc>(first, n, CompOrder<T, Comp>{&comp})) return;
+            } else {
+                if (nearly && indexed && sort_with_indices<Alloc>(p, n, comp, true, false)) return;
+            }
+            if (indexed && n >= kInferMin && sort_inferred<Alloc>(p, n, comp)) return;
+            if constexpr (sizeof(T) <= kElementRouteMax) {
                 stable_comparison_sort<Alloc>(p, n, comp);
                 return;
             } else {
-                if (n <= 0xFFFFFFFFull) { sort_with_indices<Alloc>(p, n, comp, nearly); return; }
+                if (indexed) { sort_with_indices<Alloc>(p, n, comp, false, true); return; }
                 stable_comparison_sort<Alloc>(p, n, comp);
                 return;
             }
@@ -5305,9 +5531,12 @@ inline void sort_by_key(R&& r, Proj proj) {
     sort_by_key(std::ranges::begin(r), std::ranges::end(r), std::move(proj));
 }
 
-// Sort with an arbitrary comparator: stable, by comparison (a merge sort,
-// with the same handling of sorted, reversed and nearly sorted input as the
-// key overloads), not by radix.
+// Sort with an arbitrary comparator: stable, with the same handling of
+// sorted, reversed and nearly sorted input as the key overloads. On
+// trivially copyable elements the key the comparator compares is inferred
+// from a sample of its answers, checked after the sort, and used for the
+// radix sort when it holds; a comparator that is not the order of a window
+// of the element gets the library's comparison sort.
 template <std::random_access_iterator It, class Comp>
 inline void sort_with(It first, It last, Comp comp) {
     detail::sort_with_impl<detail::DefaultAlloc>(first, last, std::move(comp));

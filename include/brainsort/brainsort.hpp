@@ -51,6 +51,7 @@
 #include "brainsort/detail/algorithm.hpp"
 #include "brainsort/detail/compsort.hpp"
 #include "brainsort/detail/config.hpp"
+#include "brainsort/detail/infer.hpp"
 #include "brainsort/detail/keys.hpp"
 #include "brainsort/detail/records.hpp"
 #include "brainsort/detail/traits.hpp"
@@ -76,37 +77,10 @@ constexpr size_t kSmallSort = 32;
 // ones through the records, where moving only the out-of-place elements is
 // cheaper than rewriting every element once.
 constexpr size_t kElementRouteMax = 16;
-
-// An array of n objects of type U in memory from Alloc. For trivially
-// constructible U it is raw storage; otherwise objects are constructed one
-// by one with emplace() and destroyed in the destructor.
-template <class U, class Alloc>
-class Buf {
-public:
-    explicit Buf(size_t n) : n_(n), built_(0) {
-        p_ = static_cast<U*>(Alloc::allocate(n * sizeof(U)));
-        if constexpr (std::is_trivially_default_constructible_v<U>) built_ = n;
-    }
-    ~Buf() {
-        if constexpr (!std::is_trivially_destructible_v<U>)
-            for (size_t i = built_; i-- > 0;) p_[i].~U();
-        Alloc::deallocate(p_, n_ * sizeof(U));
-    }
-    Buf(const Buf&) = delete;
-    Buf& operator=(const Buf&) = delete;
-    template <class... Args> U& emplace(Args&&... args) {
-        U* u = ::new (static_cast<void*>(p_ + built_)) U(std::forward<Args>(args)...);
-        ++built_;
-        return *u;
-    }
-    U*     data() const noexcept { return p_; }
-    size_t size() const noexcept { return n_; }
-    U&     operator[](size_t i) const noexcept { return p_[i]; }
-private:
-    U*     p_;
-    size_t n_;
-    size_t built_;
-};
+// Below this many elements the key a comparator compares is not inferred:
+// the sample, the records and the check cost more than the comparison sort
+// of a small range saves (level at about 5,000 elements).
+constexpr size_t kInferMin = 4096;
 
 // Thrown internally when a key cannot be represented as a record.
 struct unrepresentable_key {};
@@ -717,25 +691,30 @@ inline void permute_indices(T* p, uint32_t* idx, size_t n, bool sparse) {
 // displaced-element route when the input is nearly sorted, the comparison
 // sort otherwise), and the elements are permuted once at the end. The
 // passes move 4-byte indices instead of the elements, and a comparator
-// that throws leaves the elements untouched.
+// that throws leaves the elements untouched. Without `fallback` only the
+// displaced-element route is tried: false, range untouched, when it gives up.
 template <class Alloc, class T, class Comp>
-inline void sort_with_indices(T* p, size_t n, Comp& comp, bool nearly) {
+inline bool sort_with_indices(T* p, size_t n, Comp& comp, bool nearly, bool fallback) {
     Buf<uint32_t, Alloc> idx(n);
     uint32_t* const i = idx.data();
     for (size_t k = 0; k < n; ++k) i[k] = static_cast<uint32_t>(k);
     if (!nearly || !sort_displaced_elements<Alloc>(i, n, IndexOrder<T, Comp>{p, &comp})) {
+        if (!fallback) return false;
         IndexLess<T, Comp> less{p, &comp};
         stable_comparison_sort<Alloc>(i, n, less);
     }
     permute_indices<Alloc>(p, i, n, nearly);
+    return true;
 }
 
 // The comparator overloads: sorted, reversed and nearly sorted input are
-// handled on the elements like the key overloads do, everything else goes to
-// the comparison sort of detail/compsort.hpp, on the elements themselves up
-// to kElementRouteMax bytes and through an index array beyond. Elements
-// that are not trivially copyable, or not behind a contiguous iterator, go
-// to std::stable_sort.
+// handled on the elements like the key overloads do; then the key the
+// comparator compares is inferred (detail/infer.hpp) and, when a window of
+// the element agrees with it, the range is sorted by that key and verified;
+// everything else goes to the comparison sort of detail/compsort.hpp, on
+// the elements themselves up to kElementRouteMax bytes and through an index
+// array beyond. Elements that are not trivially copyable, or not behind a
+// contiguous iterator, go to std::stable_sort.
 template <class Alloc, class It, class Comp>
 inline void sort_with_impl(It first, It last, Comp comp) {
     using T = std::iter_value_t<It>;
@@ -750,14 +729,21 @@ inline void sort_with_impl(It first, It last, Comp comp) {
         const Prescan s = prescan_comp(first, n, comp);
         if (s.shape == Shape::sorted) return;
         if (s.shape == Shape::reversed) { reverse_stable_comp(first, n, comp, s); return; }
-        const bool nearly = s.shape == Shape::nearly_sorted;
+        const bool nearly  = s.shape == Shape::nearly_sorted;
+        const bool indexed = n <= 0xFFFFFFFFull;
         try {
+            // nearly sorted input: the displaced elements, in place or on indices
             if constexpr (sizeof(T) <= kElementRouteMax) {
                 if (nearly && sort_displaced_elements<Alloc>(first, n, CompOrder<T, Comp>{&comp})) return;
+            } else {
+                if (nearly && indexed && sort_with_indices<Alloc>(p, n, comp, true, false)) return;
+            }
+            if (indexed && n >= kInferMin && sort_inferred<Alloc>(p, n, comp)) return;
+            if constexpr (sizeof(T) <= kElementRouteMax) {
                 stable_comparison_sort<Alloc>(p, n, comp);
                 return;
             } else {
-                if (n <= 0xFFFFFFFFull) { sort_with_indices<Alloc>(p, n, comp, nearly); return; }
+                if (indexed) { sort_with_indices<Alloc>(p, n, comp, false, true); return; }
                 stable_comparison_sort<Alloc>(p, n, comp);
                 return;
             }
@@ -786,9 +772,12 @@ inline void sort_by_key(R&& r, Proj proj) {
     sort_by_key(std::ranges::begin(r), std::ranges::end(r), std::move(proj));
 }
 
-// Sort with an arbitrary comparator: stable, by comparison (a merge sort,
-// with the same handling of sorted, reversed and nearly sorted input as the
-// key overloads), not by radix.
+// Sort with an arbitrary comparator: stable, with the same handling of
+// sorted, reversed and nearly sorted input as the key overloads. On
+// trivially copyable elements the key the comparator compares is inferred
+// from a sample of its answers, checked after the sort, and used for the
+// radix sort when it holds; a comparator that is not the order of a window
+// of the element gets the library's comparison sort.
 template <std::random_access_iterator It, class Comp>
 inline void sort_with(It first, It last, Comp comp) {
     detail::sort_with_impl<detail::DefaultAlloc>(first, last, std::move(comp));

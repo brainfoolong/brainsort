@@ -1,5 +1,4 @@
-//! Key inference for the comparator sort (a prototype behind the
-//! `__internals` feature, not part of the public API).
+//! Key inference for the comparator sort: `sort_by_inferred`.
 //!
 //! A comparator is a black box, but the elements are not. On a plain
 //! element (`PlainBytes`: every byte initialised) the sort guesses that the
@@ -14,24 +13,35 @@
 //! disagrees in direction somewhere fails the guess; the input is then
 //! still untouched and goes to the comparison sort.
 use crate::algorithm::{Scratch, brainsort_impl};
-use crate::api::{Buf, PrescanResult, SMALL_SORT, Shape, ord3, prescan_cmp, reverse_stable, small_sort, sort_displaced_elements};
+use crate::api::{Buf, COMPARATOR_ROUTE_MAX, ELEMENT_ROUTE_MAX, INFER_MIN, PrescanResult, SMALL_SORT, Shape, ord3, prescan_cmp, reverse_stable, small_sort, sort_by_indices, sort_displaced_elements};
 use crate::key::{f32_radix, f64_radix};
 use crate::record::{Rec32, Rec64, Record};
 use crate::view::{Alloc, AllocError, NoHooks, View};
 use core::cmp::Ordering;
 use core::ptr;
 
-/// An element whose every byte is initialised: no padding. Reading any
-/// window of its bytes as an integer or a float is then defined.
+/// An element whose every byte is initialised, so that any window of its
+/// bytes can be read as an integer or a float: what [`sort_by_inferred`]
+/// needs. Implemented for the primitive numbers, `bool`, `char` and arrays
+/// of these; a struct opts in with `unsafe impl` once it has no padding
+/// (`#[repr(C)]` fields whose sizes add up to the size of the struct, or
+/// `#[repr(C, packed)]`).
 ///
 /// # Safety
-/// The type must have no padding bytes and no uninitialised bytes in any
-/// value.
+/// No value of the type may hold a padding or otherwise uninitialised
+/// byte.
+///
+/// [`sort_by_inferred`]: crate::sort_by_inferred
 pub unsafe trait PlainBytes: Copy {}
 macro_rules! plain {
-    ($($t:ty),*) => {$( unsafe impl PlainBytes for $t {} )*};
+    ($($t:ty),*) => {$(
+        // SAFETY: a primitive number has no padding.
+        unsafe impl PlainBytes for $t {}
+    )*};
 }
-plain!(i8, u8, i16, u16, i32, u32, i64, u64, f32, f64);
+plain!(i8, u8, i16, u16, i32, u32, i64, u64, i128, u128, isize, usize, f32, f64, bool, char);
+// SAFETY: an array of plain elements has no padding between them.
+unsafe impl<T: PlainBytes, const N: usize> PlainBytes for [T; N] {}
 
 /// Adjacent pairs the comparator is asked about before a window is chosen.
 const SAMPLE_PAIRS: usize = 2048;
@@ -273,10 +283,18 @@ pub fn sort_by_inferred_impl<T: PlainBytes, A: Alloc, F: FnMut(&T, &T) -> Orderi
         reverse_stable(v, &s, |a, b| cmp(a, b) == Ordering::Equal);
         return;
     }
-    if s.shape == Shape::NearlySorted && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
+    let nearly = s.shape == Shape::NearlySorted;
+    let indexed = n <= u32::MAX as usize;
+    let size = core::mem::size_of::<T>();
+    // nearly sorted input: the displaced elements, in place or on indices
+    if nearly && sort_displaced_elements::<T, A, _>(v, |a, b| ord3(cmp(a, b))) {
         return;
     }
-    if n <= u32::MAX as usize
+    if nearly && indexed && size > COMPARATOR_ROUTE_MAX && sort_by_indices::<T, A, F>(v, &mut cmp, true, true, false) {
+        return;
+    }
+    if indexed
+        && n >= INFER_MIN
         && let Some(c) = infer(v, &mut cmp)
     {
         let done = if c.kind.wide() {
@@ -287,6 +305,9 @@ pub fn sort_by_inferred_impl<T: PlainBytes, A: Alloc, F: FnMut(&T, &T) -> Orderi
         if let Ok(true) = done {
             return;
         }
+    }
+    if indexed && size > ELEMENT_ROUTE_MAX && sort_by_indices::<T, A, F>(v, &mut cmp, nearly, false, true) {
+        return;
     }
     v.sort_by(cmp);
 }

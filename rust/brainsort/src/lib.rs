@@ -14,6 +14,9 @@
 //! brainsort::sort_by_key(&mut rows, |r| (r.id, brainsort::Desc(r.score)));
 //! brainsort::sort_by(&mut rows, |a, b| a.name.cmp(&b.name));   // a comparator
 //! assert_eq!(rows[0].name, "a");
+//! let mut v = vec![3i64, 1, 2];
+//! brainsort::sort_by_inferred(&mut v, |a, b| b.cmp(a));     // a comparator whose key is inferred
+//! assert_eq!(v, [3, 2, 1]);
 //! ```
 //!
 //! Every sort is stable. Keys can be any integer, `bool`, `char`, `f32`,
@@ -21,7 +24,10 @@
 //! `CStr`, `OsStr`, `Path` and their owned forms, a tuple or array of those,
 //! or [`Desc`] for a reversed order; your own key type implements
 //! [`Key`] (see [`fixed_key!`] and [`bytes_key!`]). Elements can be
-//! anything: they are permuted once, after the keys were sorted.
+//! anything: they are permuted once, after the keys were sorted. A
+//! comparator gets a comparison sort from [`sort_by`], or the radix sort
+//! from [`sort_by_inferred`] when it turns out to be the order of a window
+//! of the element.
 //!
 //! # How it sorts
 //!
@@ -113,7 +119,6 @@ extern crate std;
 mod algorithm;
 mod api;
 mod cpu;
-#[cfg(feature = "__internals")]
 mod infer;
 pub mod key;
 mod memory;
@@ -124,6 +129,7 @@ mod shape;
 mod simd;
 mod view;
 
+pub use infer::PlainBytes;
 pub use key::{Desc, Key, desc};
 pub use memory::{release_memory, set_memory_cache_limit};
 
@@ -180,6 +186,37 @@ pub fn sort_by<T, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: F) {
     api::sort_by_impl::<T, memory::DefaultAlloc, F>(v, cmp)
 }
 
+/// Sorts the slice by a comparator, guessing the key it compares. Stable,
+/// and the same result as [`sort_by`] on every input.
+///
+/// The elements must be [`PlainBytes`]: every byte initialised, so that a
+/// window of them can be read as a number. The sort asks the comparator
+/// about a sample of adjacent pairs, looks for an aligned window of the
+/// element (an integer or a float of 8 to 64 bits, ascending or
+/// descending) whose order agrees with every answer, sorts by that window
+/// as a key, and checks the result with one more pass of the comparator;
+/// runs of elements the comparator calls equal go back to input order.
+/// If no window agrees, or the check fails, the slice is untouched and
+/// [`sort_by`] takes over. A comparator that is the order of a field gets
+/// the radix sort; one that is not costs a sample and, at worst, one
+/// verification pass more than [`sort_by`]. Below 4,096 elements, where
+/// the sample and the check would cost more than they save, this is
+/// [`sort_by`].
+///
+/// ```
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct Row { id: u32, score: f32 }
+/// // SAFETY: two fields of four bytes each, no padding.
+/// unsafe impl brainsort::PlainBytes for Row {}
+/// let mut v = vec![Row { id: 2, score: 0.5 }, Row { id: 1, score: 1.5 }];
+/// brainsort::sort_by_inferred(&mut v, |a, b| b.score.partial_cmp(&a.score).unwrap());
+/// assert_eq!(v[0].id, 1);
+/// ```
+pub fn sort_by_inferred<T: PlainBytes, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], cmp: F) {
+    infer::sort_by_inferred_impl::<T, memory::DefaultAlloc, F>(v, cmp)
+}
+
 /// The version of the crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -191,12 +228,8 @@ pub mod internals {
     pub use crate::algorithm::{Scratch, brainsort_impl};
     pub use crate::api::{ByRef, ByVal, Identity, Proj, sort_by_impl, sort_by_key_impl};
     pub use crate::cpu::{cache_sizes, have_avx2, have_bmi2};
-    pub use crate::infer::{PlainBytes, sort_by_inferred_impl};
+    pub use crate::infer::sort_by_inferred_impl;
     pub use crate::memory::DefaultAlloc;
     pub use crate::record::{CompRec, Key64, Rec32, Rec64, Record, StrRec};
     pub use crate::view::*;
-    /// The comparator sort with key inference: a prototype.
-    pub fn sort_by_inferred<T: PlainBytes, F: FnMut(&T, &T) -> core::cmp::Ordering>(v: &mut [T], cmp: F) {
-        sort_by_inferred_impl::<T, crate::memory::DefaultAlloc, F>(v, cmp)
-    }
 }

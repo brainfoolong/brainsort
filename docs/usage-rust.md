@@ -61,6 +61,29 @@ the standard library's `slice::sort_by`, on the elements themselves up to
 bytes per element and each element moves once, at the end. Prefer a key
 whenever the order is one; that is where the radix wins are.
 
+When the comparator is the order of a field but the call site only has
+the comparator, `sort_by_inferred` finds the field, from 4,096 elements
+on: it asks the comparator about a sample of adjacent pairs, looks for an aligned window
+of the element (an integer or a float of 8 to 64 bits, ascending or
+descending) whose order agrees with every answer, sorts by that window
+as a key and checks the result with one more comparator pass, putting
+runs the comparator calls equal back into input order. If no window
+agrees or the check fails, the slice is untouched and `sort_by` takes
+over, so the result is always that of `sort_by`. The elements must be
+`PlainBytes`, every byte initialised: the primitive numbers and arrays
+of them are, a struct opts in with `unsafe impl` once it has no padding.
+`sort_by` cannot do this on its own because a slice of an arbitrary type
+may hold padding bytes it must not read.
+
+```rust
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Point { x: f64, y: f64, id: u64 }
+// SAFETY: three 8-byte fields, no padding.
+unsafe impl brainsort::PlainBytes for Point {}
+brainsort::sort_by_inferred(&mut points, |a, b| a.y.total_cmp(&b.y));
+```
+
 ## Keys
 
 | key | order |
