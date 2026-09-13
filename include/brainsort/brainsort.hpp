@@ -8,11 +8,14 @@
 //   brainsort::sort(v.begin(), v.end());
 //   brainsort::sort(rows, [](const Row& r) { return r.id; }); // by a key
 //   brainsort::sort(rows, [](const Row& r) { return std::pair(r.group, brainsort::desc(r.score)); });
-//   brainsort::sort(rows, [](const Row& a, const Row& b) { return a.name < b.name; }); // comparator: std::stable_sort
+//   brainsort::sort(rows, [](const Row& a, const Row& b) { return a.name < b.name; }); // comparator: merge sort
 //
 // Every overload is stable: equal keys keep their input order. The sort is
 // O(n) passes over the data for fixed-size keys and O(n * key length) for
-// strings; it never degrades on any input pattern.
+// strings; it never degrades on any input pattern. Sorted, reversed and
+// nearly sorted input is recognised on the elements before anything is
+// built and handled in place. A comparator gets a stable merge sort with
+// the same handling of ordered input.
 //
 // Keys: every integral type, bool, the character types, float, double, enums,
 // pointers, std::string, std::string_view, C strings, char arrays,
@@ -30,16 +33,23 @@
 // Memory: about 1.5 records per element while sorting (8 bytes for keys of up
 // to 32 bits, 16 bytes for up to 64 bits or a string, more for composite
 // keys) plus, for trivially copyable elements, one element per element for
-// the final permutation. If an allocation fails the sort completes anyway,
-// through std::stable_sort with the same order; nothing throws except the
-// projection itself, and if that throws the range is unchanged.
+// the final permutation; a comparator sort uses one element per element.
+// Up to BRAINSORT_MEMORY_CACHE bytes (32 MiB) of freed blocks are kept for
+// the next sort; release_memory() gives them back. If an allocation fails
+// the sort completes anyway, through std::stable_sort with the same order;
+// nothing throws except the projection or comparator itself. A projection
+// that throws during the first pass over the keys leaves the range
+// unchanged; one that throws later, or a comparator that throws, leaves
+// every element in the range in an unspecified order.
 //
 // Limits: at most 2^32 - 1 elements per call (larger ranges go to
 // std::stable_sort with the same order); strings of 2^32 bytes or more
-// likewise. Thread safe: no shared mutable state.
+// likewise. Thread safe: the only shared state is the block cache, under
+// its own mutex.
 #pragma once
 
 #include "brainsort/detail/algorithm.hpp"
+#include "brainsort/detail/compsort.hpp"
 #include "brainsort/detail/config.hpp"
 #include "brainsort/detail/keys.hpp"
 #include "brainsort/detail/records.hpp"
@@ -306,48 +316,98 @@ inline void reverse_stable(It first, size_t n, Proj& proj, const Prescan& s) {
     }
 }
 
+// The three-way order of two elements, by a key projection or by a
+// comparator, for the routes that run on the elements themselves.
+template <class T, class Proj>
+struct ProjOrder {
+    Proj* proj;
+    int operator()(const T& a, const T& b) const {
+        using K = std::remove_cvref_t<std::invoke_result_t<Proj&, const T&>>;
+        bool nan = false;
+        return scan_compare<K>(std::invoke(*proj, a), std::invoke(*proj, b), nan);
+    }
+};
+template <class T, class Comp>
+struct CompOrder {
+    Comp* comp;
+    int operator()(const T& a, const T& b) const { return (*comp)(b, a) ? 1 : ((*comp)(a, b) ? -1 : 0); }
+};
+
 // The elements themselves as the array the core's displaced-element route
 // sorts, for nearly sorted input: no records, no permutation, the few
 // displaced elements are pulled out, sorted and merged back in place.
 // Trivially copyable elements behind a contiguous iterator only.
-template <class T, class Proj, class Alloc>
+template <class T, class Order, class Alloc>
 class ElemView {
 public:
     using value_type = T;
     using hooks      = NoHooks;
     using alloc      = Alloc;
     static constexpr bool counted = false;
-    ElemView(T* p, size_t n, Proj* proj) : p_(p), n_(n), proj_(proj) {}
+    ElemView(T* p, size_t n, Order order) : p_(p), n_(n), order_(order) {}
     size_t size() const noexcept { return n_; }
     T*     data() const noexcept { return p_; }
     T      get(size_t i) const { return p_[i]; }
     void   set(size_t i, const T& v) const { p_[i] = v; }
-    bool   less(const T& a, const T& b) const { return compare(a, b) < 0; }
-    int    compare(const T& a, const T& b) const {
-        using K = std::remove_cvref_t<std::invoke_result_t<Proj&, const T&>>;
-        bool nan = false;
-        return scan_compare<K>(std::invoke(*proj_, a), std::invoke(*proj_, b), nan);
-    }
+    bool   less(const T& a, const T& b) const { return order_(a, b) < 0; }
+    int    compare(const T& a, const T& b) const { return order_(a, b); }
     template <class U> static U* alloc_array(size_t n) { return static_cast<U*>(Alloc::allocate(n * sizeof(U))); }
     template <class U> static void free_array(U* p, size_t n) noexcept { Alloc::deallocate(p, n * sizeof(U)); }
 private:
     T*     p_;
     size_t n_;
-    Proj*  proj_;
+    Order  order_;
 };
 
-template <class Alloc, class It, class Proj>
-inline bool sort_displaced_elements(It first, size_t n, Proj& proj) {
+template <class T> constexpr bool element_route_v = std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>;
+
+template <class Alloc, class It, class Order>
+inline bool sort_displaced_elements(It first, size_t n, Order order) {
     using T = std::iter_value_t<It>;
-    if constexpr (std::contiguous_iterator<It> && std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>) {
+    if constexpr (std::contiguous_iterator<It> && element_route_v<T>) {
         try {
-            return brain_detail::sort_displaced(ElemView<T, Proj, Alloc>(std::to_address(first), n, &proj), n);
+            return brain_detail::sort_displaced(ElemView<T, Order, Alloc>(std::to_address(first), n, order), n);
         } catch (const std::bad_alloc&) {
             return false;   // nothing was moved: the route restores the range before it gives up
         }
     } else {
-        (void)first; (void)n; (void)proj;
+        (void)first; (void)n; (void)order;
         return false;
+    }
+}
+
+// The prescan of the comparator overloads: two comparisons per pair.
+template <class It, class Comp>
+inline Prescan prescan_comp(It first, size_t n, Comp& comp) {
+    Prescan r;
+    size_t desc = 0, asc = 0;
+    for (size_t i = 1; i < n; ++i) {
+        const auto& prev = first[static_cast<std::ptrdiff_t>(i - 1)];
+        const auto& cur  = first[static_cast<std::ptrdiff_t>(i)];
+        const bool d = comp(cur, prev);
+        desc += d;
+        asc  += !d && comp(prev, cur);
+        if ((i & (kPrescanBlock - 1)) == 0 && asc > 0 && desc > (i >> 3) + 64) return r;
+    }
+    r.descents = desc;
+    r.ascents  = asc;
+    if (desc == 0) r.shape = Shape::sorted;
+    else if (asc == 0) r.shape = Shape::reversed;
+    else if (desc <= n / 16) r.shape = Shape::nearly_sorted;
+    return r;
+}
+template <class It, class Comp>
+inline void reverse_stable_comp(It first, size_t n, Comp& comp, const Prescan& s) {
+    std::reverse(first, first + static_cast<std::ptrdiff_t>(n));
+    if (s.descents == n - 1) return;
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i + 1;
+        while (j < n && !comp(first[static_cast<std::ptrdiff_t>(i)], first[static_cast<std::ptrdiff_t>(j)]) &&
+               !comp(first[static_cast<std::ptrdiff_t>(j)], first[static_cast<std::ptrdiff_t>(i)]))
+            ++j;
+        if (j - i > 1) std::reverse(first + static_cast<std::ptrdiff_t>(i), first + static_cast<std::ptrdiff_t>(j));
+        i = j;
     }
 }
 
@@ -442,7 +502,7 @@ inline void sort_by_key_impl(It first, It last, Proj proj) {
         // Small elements are sorted in place by the displaced-element route;
         // large ones go through the records and a sparse permutation, which
         // moves only the elements that are out of place.
-        if (nearly && sizeof(T) <= kElementRouteMax && sort_displaced_elements<Alloc>(first, n, proj)) return;
+        if (nearly && sizeof(T) <= kElementRouteMax && sort_displaced_elements<Alloc>(first, n, ProjOrder<T, Proj>{&proj})) return;
     }
     if (safe_moves && n <= 0xFFFFFFFFull && n <= (~size_t(0)) / sizeof(record_t<K>) / 4) {
         bool done = false;
@@ -454,6 +514,34 @@ inline void sort_by_key_impl(It first, It last, Proj proj) {
         if (done) return;
     }
     std::stable_sort(first, last, less);
+}
+
+// The comparator overloads: sorted, reversed and nearly sorted input are
+// handled on the elements like the key overloads do, everything else goes to
+// the merge sort of detail/compsort.hpp. Elements that are not trivially
+// copyable, or not behind a contiguous iterator, go to std::stable_sort.
+template <class Alloc, class It, class Comp>
+inline void sort_with_impl(It first, It last, Comp comp) {
+    using T = std::iter_value_t<It>;
+    static_assert(std::random_access_iterator<It>, "brainsort::sort_with needs random-access iterators");
+    static_assert(std::is_invocable_r_v<bool, Comp&, const T&, const T&>, "brainsort::sort_with: the comparator must accept two elements");
+    if (first == last) return;
+    const size_t n = static_cast<size_t>(last - first);
+    if (n < 2) return;
+    if constexpr (std::contiguous_iterator<It> && element_route_v<T>) {
+        T* const p = std::to_address(first);
+        if (n <= kSmallSort) { comp_detail::insertion_run(p, n, comp); return; }
+        const Prescan s = prescan_comp(first, n, comp);
+        if (s.shape == Shape::sorted) return;
+        if (s.shape == Shape::reversed) { reverse_stable_comp(first, n, comp, s); return; }
+        if (s.shape == Shape::nearly_sorted && sort_displaced_elements<Alloc>(first, n, CompOrder<T, Comp>{&comp})) return;
+        try {
+            stable_merge_sort<Alloc>(p, n, comp);
+            return;
+        } catch (const std::bad_alloc&) {
+        }
+    }
+    std::stable_sort(first, last, std::move(comp));
 }
 
 template <class F, class T>
@@ -475,15 +563,16 @@ inline void sort_by_key(R&& r, Proj proj) {
     sort_by_key(std::ranges::begin(r), std::ranges::end(r), std::move(proj));
 }
 
-// Sort with an arbitrary comparator: stable, but by comparison
-// (std::stable_sort), not by brainsort.
+// Sort with an arbitrary comparator: stable, by comparison (a merge sort,
+// with the same handling of sorted, reversed and nearly sorted input as the
+// key overloads), not by radix.
 template <std::random_access_iterator It, class Comp>
 inline void sort_with(It first, It last, Comp comp) {
-    std::stable_sort(first, last, std::move(comp));
+    detail::sort_with_impl<detail::DefaultAlloc>(first, last, std::move(comp));
 }
 template <std::ranges::random_access_range R, class Comp>
 inline void sort_with(R&& r, Comp comp) {
-    std::stable_sort(std::ranges::begin(r), std::ranges::end(r), std::move(comp));
+    sort_with(std::ranges::begin(r), std::ranges::end(r), std::move(comp));
 }
 
 // Sort by the elements themselves.

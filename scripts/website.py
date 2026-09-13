@@ -84,6 +84,8 @@ API_TYPES = {
     "double": "std::vector<double>",
     "std::string": "std::vector<std::string> of random 3 to 12 letter words",
     "64-byte struct by int64": "std::vector of a 64-byte struct, sorted by its int64_t field (brainsort by projection, the others by comparator)",
+    "int32_t by comparator": "std::vector<int32_t>, every sort called with a comparator: brainsort's own merge sort against the others",
+    "64-byte struct by int64 by comparator": "std::vector of a 64-byte struct, every sort called with a comparator on its int64_t field",
 }
 
 

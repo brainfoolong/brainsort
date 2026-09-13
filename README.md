@@ -3,7 +3,7 @@
 A stable sorting algorithm for keys that map to an ordered integer: numbers,
 strings, dates, ids. It avoids comparing keys wherever the key type allows it
 and does less work when the input already has structure. Header-only C++20,
-MIT licensed, version 0.2.0.
+MIT licensed, version 0.3.0.
 
 **All results, on one page: [brainfoolong.github.io/brainsort](https://brainfoolong.github.io/brainsort/).**
 Every algorithm, key type, input pattern and size; the deterministic work
@@ -26,7 +26,7 @@ brainsort::sort(v);                                              // stable, by v
 brainsort::sort(v.begin(), v.end());                             // any random-access range
 brainsort::sort(rows, [](const Row& r) { return r.id; });        // by a key
 brainsort::sort(rows, [](const Row& r) { return std::pair(r.group, brainsort::desc(r.score)); });
-brainsort::sort(rows, [](const Row& a, const Row& b) { return a.name < b.name; });  // a comparator: std::stable_sort
+brainsort::sort(rows, [](const Row& a, const Row& b) { return a.name < b.name; });  // a comparator: merge sort
 ```
 
 Every overload is stable. Keys can be any integer, bool, character type,
@@ -38,8 +38,10 @@ anything move-assignable: they are permuted once, after the keys were sorted.
 
 Three things to know: it uses memory (about 1.5 small records per element
 while sorting, plus one element per element for the final permutation of
-plain structs); an arbitrary comparator is the slow path (it goes to
-`std::stable_sort`); and a range of 2^32 elements or more goes there too. The
+plain structs, and it keeps up to 32 MiB of freed blocks for the next call);
+an arbitrary comparator gets a comparison sort (the library's own stable
+merge sort, about 1.6x faster than `std::stable_sort`, but without the radix
+wins); and a range of 2^32 elements or more goes to `std::stable_sort`. The
 whole contract is under [The library](#the-library).
 
 ## Results in short
@@ -79,7 +81,10 @@ full-entropy input (random, prefixed and sparse keys) by a large margin and on
 nearly sorted input by a smaller one; where it loses, it loses on input that
 is already sorted, all equal or has a handful of distinct values, where the
 adaptive comparison sorts finish in one pass and brainsort's scout pass costs
-a little extra. Every such cell is on the page.
+a little extra. Every such cell is on the page. The page also has the public
+API on plain vectors, from a hundred thousand to ten million elements,
+against `std::sort`, `std::stable_sort` and pdqsort, including the
+comparator overload.
 
 ## How it works
 
@@ -101,17 +106,26 @@ are, and the monotone runs if there are at most four. That picks a route:
    varying-bit range, only the varying bits (`PEXT`), or key minus a base.
    When three or more passes are needed the range is first split at the
    median and each half is radix sorted through one half-size buffer, which
-   halves the working set and the scratch. A few distinct keys go through a
-   one-pass dictionary radix; two to four distinct int32 keys through a
-   branch-free partition sort. Strings are consumed in 7-byte chunks, tie
-   groups recursing on the next chunk with the same route selection.
+   halves the working set and the scratch. A half that is still larger than
+   a third of the last-level cache is scattered once by its top digit,
+   through one write-combining cache line per bucket, into buckets the size
+   of the first-level cache, and each bucket then takes its remaining passes
+   in cache; the cache sizes come from the CPU. A few distinct keys go
+   through a one-pass dictionary radix; two to four distinct int32 keys
+   through a branch-free partition sort. Strings are consumed in 7-byte
+   chunks, tie groups recursing on the next chunk with the same route
+   selection.
 
 Doubles, signed integers and strings go through order-preserving
 transforms, so the radix order is the natural order; `-0.0` equals `+0.0`,
 and NaN has a defined place. The count tables stay under 64 KiB on the split
 path for an allocator reason recorded in
 [docs/decisions/0001.md](docs/decisions/0001.md); the variants that were
-measured and rejected are in [docs/decisions/0002.md](docs/decisions/0002.md).
+measured and rejected are in [docs/decisions/0002.md](docs/decisions/0002.md),
+the scatter beyond the cache and the memory cache in
+[docs/decisions/0005.md](docs/decisions/0005.md), the handling of ordered
+input on the elements and the comparator sort in
+[docs/decisions/0006.md](docs/decisions/0006.md).
 
 ## The library
 
@@ -129,9 +143,10 @@ All in namespace `brainsort`, all stable, all in
 | `sort(first, last)`, `sort(range)` | the elements themselves |
 | `sort(first, last, f)`, `sort(range, f)` | `f(element)` if `f` takes one argument, else the comparator `f(a, b)` |
 | `sort_by_key(first, last, proj)`, `sort_by_key(range, proj)` | the key `proj(element)` |
-| `sort_with(first, last, comp)`, `sort_with(range, comp)` | the comparator, through `std::stable_sort` |
+| `sort_with(first, last, comp)`, `sort_with(range, comp)` | the comparator, by a stable merge sort |
 | `stable_sort(...)` | the same four, under the standard name |
 | `desc(key)` | wraps a key to reverse its order |
+| `release_memory()` | frees the blocks kept for the next sort |
 
 Ranges are anything with random-access iterators: `std::vector`,
 `std::deque`, `std::array`, `std::span`, C arrays, pointer pairs.
@@ -139,12 +154,29 @@ Ranges are anything with random-access iterators: `std::vector`,
 
 ### How it sorts your elements
 
-The public API never runs the algorithm on your elements. It builds an array
-of small records, one per element, holding the radix form of the key and the
-original index; sorts the records; then permutes your elements once. Keys of
-up to 32 bits become 8-byte records, up to 64 bits 16-byte records, a string
-a 16-byte pointer-and-length record, anything else a composite record sorted
-chunk by chunk. Plain integers are written back directly.
+One pass over the keys comes first, before anything is built: it counts
+descents and ascents and stops as soon as they prove the input unordered.
+Sorted input returns at once; reversed input is reversed in place with equal
+keys kept in their order; nearly sorted input (at most one descent in
+sixteen) is fixed in place when the elements are trivially copyable and at
+most 16 bytes, by pulling out the few displaced elements, sorting them and
+merging them back. Plain arrays of 32- and 64-bit numbers take this pass with
+AVX2.
+
+Everything else goes through records. The API builds an array of small
+records, one per element, holding the radix form of the key and the original
+index; sorts the records; then permutes your elements once. Keys of up to 32
+bits become 8-byte records, up to 64 bits 16-byte records, a string a 16-byte
+pointer-and-length record, anything else a composite record sorted chunk by
+chunk. Plain integers and doubles are written back directly; nearly sorted
+large elements are permuted by following cycles, which moves only the
+elements that are out of place.
+
+A comparator gets the library's stable merge sort (the same pass over the
+elements first, then runs of 16 merged bottom-up between the array and a
+buffer of the same size, the merge selecting instead of branching, two
+merges advancing together). It runs on trivially copyable elements behind a
+contiguous iterator; other elements go to `std::stable_sort`.
 
 ### Key types
 
@@ -166,18 +198,31 @@ A comparator that is not expressible as a key goes to `std::stable_sort`.
 
 - **Memory.** n records of 8, 16 or more bytes, plus the algorithm's scratch
   of about n/2 records on full-entropy input, plus count tables of at most
-  64 KiB. Trivially copyable elements are permuted through a buffer of n
-  elements, other elements in place with moves. Sorting 10 million `int32_t`
-  takes about 120 MB beside the 40 MB array.
+  64 KiB (about 400 KiB for a part that is scattered beyond the cache).
+  Trivially copyable elements are permuted through a buffer of n elements,
+  other elements in place with moves; a comparator sort uses a buffer of n
+  elements. Sorting 10 million `int32_t` takes about 120 MB beside the 40 MB
+  array. Sorted and reversed input, and nearly sorted small elements, need
+  no memory beyond the displaced elements.
+- **Memory is kept.** Freed blocks of 64 KiB and more are kept, up to 32 MiB
+  in total, for the next sort of the process; fresh pages cost more than a
+  sort of a hundred thousand elements. `BRAINSORT_MEMORY_CACHE` sets the
+  limit in bytes (0 disables it) and `brainsort::release_memory()` frees the
+  blocks at any time.
 - **Allocation fails.** The sort completes anyway through `std::stable_sort`
   with the same order; if only the permutation buffer fails, the permutation
   runs in place. The tests fail every allocation in turn.
-- **The projection throws.** The exception propagates and the range is
-  unchanged.
+- **The projection throws.** The exception propagates. If it threw during
+  the first pass over the keys, the range is unchanged; if it threw later
+  (a projection that returned once for every element and throws on a later
+  call), every element is still in the range, in an unspecified order.
+- **The comparator throws.** The exception propagates and every element is
+  still in the range, in an unspecified order, as with `std::stable_sort`.
 - **Moves may throw.** Such element types are sorted by `std::stable_sort`.
 - **Limits.** At most 2^32 - 1 elements per call and strings shorter than
-  2^32 bytes; beyond either the call goes to `std::stable_sort`. No shared
-  mutable state; concurrent sorts are fine.
+  2^32 bytes; beyond either the call goes to `std::stable_sort`. The block
+  cache is the only shared state, under its own mutex; concurrent sorts are
+  fine.
 
 ### Tests and CI
 
@@ -185,8 +230,9 @@ A comparator that is not expressible as a key goes to `std::stable_sort`.
 patterns at 25 sizes through reference and by-value projections and checks
 order, stability and permutation; then containers, element kinds, the
 floating-point total order, allocation failure at every allocation point,
-throwing projections, concurrent sorts, random shapes and 10 million
-elements. The benchmark suite, [src/test.cpp](src/test.cpp), adds every
+throwing projections and comparators, the comparator overloads on every
+pattern, concurrent sorts, random shapes, and inputs large enough for the
+scatter beyond the cache. The benchmark suite, [src/test.cpp](src/test.cpp), adds every
 algorithm on every key type at 42 sizes and 3 seeds, checks that the verifier
 rejects wrong output, and recomputes every row of the golden file
 [results/counts.csv](results/counts.csv).
@@ -211,7 +257,7 @@ sh scripts/bench.sh                          # time this machine, then build the
 ## Layout
 
 ```
-include/brainsort/                the library: brainsort.hpp (API) and detail/ (config, traits, keys, records, algorithm, radix, merge sort)
+include/brainsort/                the library: brainsort.hpp (API) and detail/ (config, traits, keys, records, algorithm, radix, merge sort, comparison sort)
 single_include/brainsort.hpp      the same as one file, generated by scripts/amalgamate.py
 tests/                            library tests, single-header check, fuzz target
 bench/api_bench.cpp               the public API against std::sort, std::stable_sort, pdqsort on plain vectors

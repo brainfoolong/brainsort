@@ -12,7 +12,8 @@
 // one table: median wall time in ms for brainsort::sort, std::sort,
 // std::stable_sort and pdqsort (the branchless partition for arithmetic
 // keys, as pdqsort.h selects on its own) per element type, dataset and
-// size, and the ratio of brainsort to the fastest of the others.
+// size, and the ratio of brainsort to the fastest of the others. The last
+// rows call brainsort::sort with a comparator, its comparison sort.
 #include "brainsort/brainsort.hpp"
 #include "pdqsort/pdqsort.h"
 #include "sortbench/stamp.hpp"
@@ -108,15 +109,18 @@ double median_ms(const std::vector<T>& input, int reps, F&& sorter) {
     return t[t.size() / 2];
 }
 
+// `comparator`: brainsort::sort is called with the comparator the others
+// use, which takes the comparison sort of the library instead of the radix.
 template <class T>
-void bench_type(const std::vector<size_t>& sizes, int reps) {
+void bench_type(const std::vector<size_t>& sizes, int reps, bool comparator = false) {
     for (size_t n : sizes) {
         if (std::is_same_v<T, std::string> && n > 1000000) continue;   // 10M strings: memory
         if (std::is_same_v<T, Row> && n > 1000000) continue;
         for (const char* ds : {"random", "sorted", "reverse", "nearly_sorted", "few_unique"}) {
             const std::vector<T> in = make<T>(ds, n, 20260912);
-            const double bs = median_ms(in, reps, [](std::vector<T>& v) {
-                if constexpr (std::is_same_v<T, Row>) brainsort::sort(v, [](const Row& r) { return r.key; });
+            const double bs = median_ms(in, reps, [comparator](std::vector<T>& v) {
+                if (comparator) brainsort::sort(v, Less<T>{});
+                else if constexpr (std::is_same_v<T, Row>) brainsort::sort(v, [](const Row& r) { return r.key; });
                 else brainsort::sort(v);
             });
             const double ss = median_ms(in, reps, [](std::vector<T>& v) { std::sort(v.begin(), v.end(), Less<T>{}); });
@@ -126,7 +130,7 @@ void bench_type(const std::vector<size_t>& sizes, int reps) {
                 else pdqsort(v.begin(), v.end(), Less<T>{});
             });
             const double best = std::min({ss, st, pd});
-            std::printf("| %s | %zu | %s | %.3f | %.3f | %.3f | %.3f | %.2fx |\n", Gen<T>::name(), n, ds, bs, ss, st, pd, best / bs);
+            std::printf("| %s%s | %zu | %s | %.3f | %.3f | %.3f | %.3f | %.2fx |\n", Gen<T>::name(), comparator ? " by comparator" : "", n, ds, bs, ss, st, pd, best / bs);
             std::fflush(stdout);
         }
     }
@@ -161,5 +165,7 @@ int main(int argc, char** argv) {
     bench_type<double>(sizes, reps);
     bench_type<std::string>(sizes, reps);
     bench_type<Row>(sizes, reps);
+    bench_type<int32_t>(sizes, reps, true);
+    bench_type<Row>(sizes, reps, true);
     return 0;
 }

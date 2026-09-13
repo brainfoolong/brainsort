@@ -633,6 +633,138 @@ void test_allocation_failure() {
     std::printf("%-40s %s\n", "allocation failure and exceptions", g_failures == failures_before ? "ok" : "FAILED");
 }
 
+// ---- the comparator overloads ------------------------------------------------------------
+// The same checks as for keys, on every pattern and size: the merge sort,
+// the in-place routes for ordered input, the small sort, the std::stable_sort
+// path for non-trivial elements, and a comparator that throws.
+struct Wide {   // a trivially copyable 64-byte element
+    int32_t  key;
+    uint32_t id;
+    char     payload[56];
+};
+template <class T>
+void comparator_case(const char* name, size_t max_n) {
+    const int failures_before = g_failures;
+    auto less = [](const T& a, const T& b) { return a.key < b.key; };
+    for (const char* pattern : kPatterns) {
+        for (size_t n : {size_t{0}, size_t{1}, size_t{2}, size_t{16}, size_t{17}, size_t{32}, size_t{33}, size_t{100}, size_t{255},
+                         size_t{1000}, size_t{4097}, size_t{10000}, size_t{100000}}) {
+            if (n > max_n) continue;
+            Pool pool;
+            const std::vector<Tagged<int32_t>> keys = make_input<int32_t>(pattern, n, 5 * n + 3, pool);
+            std::vector<T> in;
+            for (const auto& k : keys) { T t{}; t.key = k.key; t.id = k.id; in.push_back(t); }
+            const std::string where = std::string(name) + "/" + pattern + " n=" + std::to_string(n);
+            auto check = [&](const std::vector<T>& out, const char* form) {
+                std::vector<Tagged<int32_t>> tagged;
+                for (const auto& t : out) tagged.push_back({t.key, t.id});
+                std::string err;
+                CHECK(verify(tagged, n, err), where + " [" + form + "]: " + err);
+            };
+            std::vector<T> a = in;
+            brainsort::sort_with(a.begin(), a.end(), less);
+            check(a, "sort_with");
+            std::vector<T> b = in;
+            brainsort::sort(b, less);
+            check(b, "sort(range, comp)");
+            std::vector<T> c = in;
+            brainsort::stable_sort(c, less);
+            check(c, "stable_sort(range, comp)");
+        }
+    }
+    std::printf("%-40s %s\n", name, g_failures == failures_before ? "ok" : "FAILED");
+}
+void test_comparator(size_t big) {
+    comparator_case<Tagged<int32_t>>("comparator, 8-byte elements", big);
+    comparator_case<Wide>("comparator, 64-byte elements", big / 10);
+    const int failures_before = g_failures;
+    {   // non-trivial elements and a non-contiguous container: std::stable_sort
+        Pool pool;
+        std::vector<Tagged<std::string>> v = make_input<std::string>("random", 5000, 9, pool);
+        brainsort::sort(v, [](const Tagged<std::string>& a, const Tagged<std::string>& b) { return a.key < b.key; });
+        std::string err;
+        CHECK(verify(v, v.size(), err), "comparator on string elements: " + err);
+        std::deque<Tagged<int32_t>> d;
+        for (const auto& t : make_input<int32_t>("nearly_sorted", 5000, 10, pool)) d.push_back(t);
+        brainsort::sort(d, [](const Tagged<int32_t>& a, const Tagged<int32_t>& b) { return a.key < b.key; });
+        std::vector<Tagged<int32_t>> dv(d.begin(), d.end());
+        CHECK(verify(dv, dv.size(), err), "comparator on a deque: " + err);
+    }
+    {   // a comparator that throws leaves every element in the range
+        Pool pool;
+        for (const char* pattern : {"random", "nearly_sorted", "reverse"}) {
+            const std::vector<Tagged<int32_t>> in = make_input<int32_t>(pattern, 3000, 11, pool);
+            std::vector<uint32_t> ids;
+            for (const auto& t : in) ids.push_back(t.id);
+            std::sort(ids.begin(), ids.end());
+            for (size_t at : {size_t{0}, size_t{1}, size_t{100}, size_t{2999}, size_t{7000}, size_t{20000}}) {
+                std::vector<Tagged<int32_t>> v = in;
+                size_t calls = 0;
+                bool   thrown = false;
+                try {
+                    brainsort::sort(v, [&](const Tagged<int32_t>& a, const Tagged<int32_t>& b) {
+                        if (calls++ == at) throw std::runtime_error("comparator failed");
+                        return a.key < b.key;
+                    });
+                } catch (const std::runtime_error&) {
+                    thrown = true;
+                }
+                std::vector<uint32_t> got;
+                for (const auto& t : v) got.push_back(t.id);
+                std::sort(got.begin(), got.end());
+                CHECK(got == ids, std::string("throwing comparator on ") + pattern + " at call " + std::to_string(at) + " keeps every element");
+                if (!thrown) {
+                    std::string err;
+                    CHECK(verify(v, v.size(), err), std::string("comparator that did not throw on ") + pattern + ": " + err);
+                }
+            }
+        }
+    }
+    {   // a projection that throws on the in-place route for nearly sorted input keeps every element
+        Pool pool;
+        const std::vector<Tagged<int32_t>> in = make_input<int32_t>("nearly_sorted", 20000, 12, pool);
+        std::vector<uint32_t> ids;
+        for (const auto& t : in) ids.push_back(t.id);
+        std::sort(ids.begin(), ids.end());
+        for (size_t at : {size_t{0}, size_t{5000}, size_t{20000}, size_t{20500}, size_t{25000}, size_t{40000}, size_t{41000}}) {
+            std::vector<Tagged<int32_t>> v = in;
+            size_t calls = 0;
+            bool   thrown = false;
+            const bool during_scan = at < in.size();
+            try {
+                brainsort::sort(v, [&](const Tagged<int32_t>& t) {
+                    if (calls++ == at) throw std::runtime_error("projection failed");
+                    return t.key;
+                });
+            } catch (const std::runtime_error&) {
+                thrown = true;
+            }
+            std::vector<uint32_t> got;
+            for (const auto& t : v) got.push_back(t.id);
+            if (thrown && during_scan) {
+                bool same = true;
+                for (size_t i = 0; i < v.size(); ++i) same = same && v[i].id == in[i].id;
+                CHECK(same, "projection throwing during the first scan leaves the range unchanged (call " + std::to_string(at) + ")");
+            }
+            std::sort(got.begin(), got.end());
+            CHECK(got == ids, "projection throwing at call " + std::to_string(at) + " keeps every element");
+            if (!thrown) { std::string err; CHECK(verify(v, v.size(), err), "projection that did not throw: " + err); }
+        }
+    }
+    {   // the memory cache can be released at any time
+        Pool pool;
+        std::vector<Tagged<int64_t>> v = make_input<int64_t>("random", 200000, 13, pool);
+        brainsort::sort(v, [](const Tagged<int64_t>& t) { return t.key; });
+        brainsort::release_memory();
+        std::vector<Tagged<int64_t>> w = make_input<int64_t>("random", 200000, 14, pool);
+        brainsort::sort(w, [](const Tagged<int64_t>& t) { return t.key; });
+        brainsort::release_memory();
+        std::string err;
+        CHECK(verify(v, v.size(), err) && verify(w, w.size(), err), "release_memory between sorts: " + err);
+    }
+    std::printf("%-40s %s\n", "comparator paths and exceptions", g_failures == failures_before ? "ok" : "FAILED");
+}
+
 // ---- threads -----------------------------------------------------------------------------
 void test_threads() {
     const int failures_before = g_failures;
@@ -682,6 +814,32 @@ void test_large() {
         brainsort::sort(v, [](const Tagged<double>& t) { return t.key; });
         std::string err;
         CHECK(verify(v, v.size(), err), "1M double: " + err);
+    }
+    {   // 16-byte records beyond the cache: the MSD scatter on both halves
+        Pool pool;
+        std::vector<Tagged<double>> v = make_input<double>("random", 5'000'000, 8, pool);
+        brainsort::sort(v, [](const Tagged<double>& t) { return t.key; });
+        std::string err;
+        CHECK(verify(v, v.size(), err), "5M double: " + err);
+        std::vector<double> d;
+        for (const auto& t : v) d.push_back(t.key);
+        std::mt19937_64 rng(9);
+        std::shuffle(d.begin(), d.end(), rng);
+        for (size_t i = 0; i < d.size(); i += 97) d[i] = -0.0;   // written back bit for bit
+        std::vector<double> e = d;
+        brainsort::sort(d);
+        std::stable_sort(e.begin(), e.end());
+        CHECK(d.size() == e.size() && std::memcmp(d.data(), e.data(), d.size() * sizeof(double)) == 0, "5M double values, negative zeros kept");
+    }
+    {   // the comparison sort beyond the small sizes
+        std::mt19937_64 rng(77);
+        std::vector<Wide> v(2'000'000);
+        for (size_t i = 0; i < v.size(); ++i) { v[i].key = static_cast<int32_t>(rng() % 1000000); v[i].id = static_cast<uint32_t>(i); }
+        brainsort::sort(v, [](const Wide& a, const Wide& b) { return a.key < b.key; });
+        std::vector<Tagged<int32_t>> tagged;
+        for (const auto& t : v) tagged.push_back({t.key, t.id});
+        std::string err;
+        CHECK(verify(tagged, tagged.size(), err), "2M 64-byte elements by comparator: " + err);
     }
     {
         Pool pool;
@@ -784,6 +942,7 @@ int main(int argc, char** argv) {
     test_float_order<double>("double");
     test_containers();
     test_allocation_failure();
+    test_comparator(big);
     test_threads();
     test_random_shapes();
     if (!quick) test_large();

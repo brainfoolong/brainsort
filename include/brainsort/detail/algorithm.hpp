@@ -557,7 +557,11 @@ inline void restore_displaced(A a, D& disp, size_t nd, size_t nk, size_t scanned
 // Route 3. The kept (in-order) elements are compacted to a[0,nk) as the scan
 // goes; displaced elements are moved to a side buffer with their original
 // position. Returns false, with the array restored to its input order, if
-// too many elements turn out to be displaced.
+// too many elements turn out to be displaced. If a compare throws (the
+// public API runs this route on the caller's elements, whose projection
+// may throw) the array is restored the same way during the scan and the
+// index sort; during the final merge the elements that were not merged
+// yet are put back in the gap, so every element stays in the range.
 //
 // Stability without storing every kept position: for a displaced element d
 // let rank(d) be the number of kept elements that precede it in the input.
@@ -585,7 +589,9 @@ inline bool sort_displaced(A a, size_t n) {
     T* const p = a.data();   // the hot loop works on the raw pointer (counted: through the view)
     auto rd = [&](size_t i) -> T { if constexpr (C) return a.get(i); else return p[i]; };
     auto wr = [&](size_t i, T v) { if constexpr (C) a.set(i, v); else p[i] = v; };
-    for (size_t i = 0; i < n; ++i) {
+    size_t i = 0;
+    try {
+    for (; i < n; ++i) {
         const T it = rd(i);
         if (nk == 0 || !a.less(it, k1)) {           // extends the sorted subsequence
             ring[nk & (kRing - 1)] = static_cast<uint32_t>(i);
@@ -621,6 +627,10 @@ inline bool sort_displaced(A a, size_t n) {
         k1 = it;
         k2 = nk >= 2 ? rd(nk - 2) : T{};
     }
+    } catch (...) {   // every compare of an iteration runs before it moves anything
+        restore_displaced(a, disp, nd, nk, i);
+        throw;
+    }
     if (nd == 0) return true;   // cannot happen when descents > 0, but harmless
 
     // rank(d) = suffix minimum of the recorded stack heights.
@@ -649,7 +659,7 @@ inline bool sort_displaced(A a, size_t n) {
     }
     const typename AuxVec<uint32_t, A>::View idx{idx_buf.p, 2 * nd};
     for (size_t t = 0; t < nd; ++t) idx.set(t, static_cast<uint32_t>(t));
-    {
+    try {
         size_t src = 0, dst = nd;   // halves of idx_buf
         for (size_t width = 1; width < nd; width *= 2) {
             for (size_t lo = 0; lo < nd; lo += 2 * width) {
@@ -674,6 +684,9 @@ inline bool sort_displaced(A a, size_t n) {
         }
         if (src != 0)
             for (size_t t = 0; t < nd; ++t) idx.set(t, idx.get(nd + t));
+    } catch (...) {   // nothing in the array has moved since the scan
+        restore_displaced(a, disp, nd, nk, n);
+        throw;
     }
 
     // Backward merge of the kept elements a[0,nk) and the sorted displaced
@@ -687,6 +700,7 @@ inline bool sort_displaced(A a, size_t n) {
     T        ed = disp.elem(t);
     if (ik > 0) {
         T ek = a.get(ik - 1);
+        try {
         for (;;) {
             bool take_kept;
             if (a.less(ed, ek))      take_kept = true;
@@ -702,6 +716,10 @@ inline bool sort_displaced(A a, size_t n) {
                 t  = idx.get(id - 1);
                 ed = disp.elem(t);
             }
+        }
+        } catch (...) {   // a[0,ik) kept, a[o,n) merged: the unmerged displaced fill the gap
+            for (size_t u = 0; u < id; ++u) a.set(ik + u, disp.elem(idx.get(u)));
+            throw;
         }
     }
     while (id > 0) {   // kept elements exhausted: the rest of the displaced go in front
