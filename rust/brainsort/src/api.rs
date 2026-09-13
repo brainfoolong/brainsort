@@ -152,17 +152,17 @@ impl<T, K: Key, F: FnMut(&T) -> K> Proj<T> for ByVal<F> {
 // ---- raw buffers ----------------------------------------------------------------------------
 
 /// An array of n objects of type U in memory from A: raw storage.
-struct Buf<U, A: Alloc> {
+pub(crate) struct Buf<U, A: Alloc> {
     p: NonNull<U>,
     n: usize,
     _a: PhantomData<A>,
 }
 impl<U, A: Alloc> Buf<U, A> {
-    fn new(n: usize) -> Result<Self, AllocError> {
+    pub(crate) fn new(n: usize) -> Result<Self, AllocError> {
         Ok(Buf { p: alloc_array::<A, U>(n)?, n, _a: PhantomData })
     }
     #[inline(always)]
-    fn ptr(&self) -> *mut U {
+    pub(crate) fn ptr(&self) -> *mut U {
         self.p.as_ptr()
     }
 }
@@ -420,7 +420,7 @@ fn prefix_ascent_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], upto: usize, cmp:
 /// branch per pair; ties and the pairs after the first ascent are counted.
 /// The bail-out a plain count would have taken inside the run is replayed
 /// after it, so every decision is the count's.
-fn prescan_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> PrescanResult {
+pub(crate) fn prescan_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> PrescanResult {
     let n = v.len();
     let mut r = PrescanResult::default();
     let i = 1 + v.iter().zip(&v[1..]).take_while(|(p, c)| cmp(p, c) != Ordering::Greater).count();
@@ -482,7 +482,7 @@ fn prescan_cmp<T, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> Prescan
 /// Reverses a non-increasing range in place with each group of equal keys
 /// put back into input order, so the result is stable. Strictly decreasing
 /// input (every pair a descent) has no groups.
-fn reverse_stable<T>(v: &mut [T], s: &PrescanResult, mut eq: impl FnMut(&T, &T) -> bool) {
+pub(crate) fn reverse_stable<T>(v: &mut [T], s: &PrescanResult, mut eq: impl FnMut(&T, &T) -> bool) {
     let n = v.len();
     v.reverse();
     if s.descents == n - 1 {
@@ -505,7 +505,7 @@ fn reverse_stable<T>(v: &mut [T], s: &PrescanResult, mut eq: impl FnMut(&T, &T) 
 
 /// Insertion sort of the elements by `less`; a panic in `less` leaves every
 /// element in the slice (the element being inserted goes back into its hole).
-fn small_sort<T>(v: &mut [T], mut less: impl FnMut(&T, &T) -> bool) {
+pub(crate) fn small_sort<T>(v: &mut [T], mut less: impl FnMut(&T, &T) -> bool) {
     struct Hole<T> {
         src: *mut T,
         dst: *mut T,
@@ -731,7 +731,7 @@ impl<T, E: Elem, O: FnMut(&T, &T) -> i32, A: Alloc> Arr for ElemView<T, E, O, A>
 /// `COMPARATOR_ROUTE_MAX` bytes. Ok(true) when the slice is sorted;
 /// Ok(false), with the slice untouched, when the route gave up. A panic in
 /// `order` leaves every element in the slice.
-fn sort_displaced_elements<T, A: Alloc, O: FnMut(&T, &T) -> i32>(v: &mut [T], mut order: O) -> bool {
+pub(crate) fn sort_displaced_elements<T, A: Alloc, O: FnMut(&T, &T) -> i32>(v: &mut [T], mut order: O) -> bool {
     macro_rules! run {
         ($u:ty, $w:expr) => {{
             let view = ElemView::<T, Bits<$u, $w>, O, A> { p: v.as_mut_ptr() as *mut Bits<$u, $w>, n: v.len(), order: &mut order as *mut O, _m: PhantomData };
@@ -835,7 +835,7 @@ pub fn sort_by_key_impl<T, P: Proj<T>, A: Alloc>(v: &mut [T], mut proj: P) {
 }
 
 #[inline(always)]
-fn ord3(o: Ordering) -> i32 {
+pub(crate) fn ord3(o: Ordering) -> i32 {
     match o {
         Ordering::Less => -1,
         Ordering::Equal => 0,

@@ -108,6 +108,8 @@ extern crate std;
 mod algorithm;
 mod api;
 mod cpu;
+#[cfg(feature = "__internals")]
+mod infer;
 pub mod key;
 mod memory;
 mod mergesort;
@@ -182,7 +184,12 @@ pub mod internals {
     pub use crate::algorithm::{Scratch, brainsort_impl};
     pub use crate::api::{ByRef, ByVal, Identity, Proj, sort_by_impl, sort_by_key_impl};
     pub use crate::cpu::{cache_sizes, have_avx2, have_bmi2};
+    pub use crate::infer::{PlainBytes, sort_by_inferred_impl};
     pub use crate::memory::DefaultAlloc;
     pub use crate::record::{CompRec, Rec32, Rec64, Record, StrRec};
     pub use crate::view::*;
+    /// The comparator sort with key inference: a prototype.
+    pub fn sort_by_inferred<T: PlainBytes, F: FnMut(&T, &T) -> core::cmp::Ordering>(v: &mut [T], cmp: F) {
+        sort_by_inferred_impl::<T, crate::memory::DefaultAlloc, F>(v, cmp)
+    }
 }
