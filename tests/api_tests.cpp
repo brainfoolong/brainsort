@@ -398,7 +398,8 @@ void test_float_order(const char* name) {
 
 // ---- plain 64-bit keys ------------------------------------------------------------------------
 // The keys-only route: the sorted keys are written back bit for bit, the
-// two zeros of a double in input order. NaNs are covered by test_float_order.
+// two zeros of a double or float in input order. NaNs are covered by
+// test_float_order.
 template <class K>
 void check_plain(const std::vector<K>& v, const std::string& ctx) {
     std::vector<K> a = v, b = v;
@@ -417,6 +418,12 @@ void test_plain_keys(size_t max_n) {
         std::vector<uint64_t> u;
         std::vector<int64_t>  few;
         std::vector<size_t>   rev;
+        std::vector<float>    f32, zeros32;
+        std::vector<int32_t>  few32;
+        std::vector<uint32_t> u32;
+        std::vector<int16_t>  i16;
+        std::vector<uint8_t>  u8;
+        std::vector<char>     rev8;
         for (size_t i = 0; i < n; ++i) {
             switch (rng() % 12) {
                 case 0: case 1: case 2: f.push_back(-0.0); break;
@@ -431,6 +438,20 @@ void test_plain_keys(size_t max_n) {
             u.push_back(rng());
             few.push_back(static_cast<int64_t>(rng() % 7) - 3);
             rev.push_back(n - i);
+            switch (rng() % 12) {
+                case 0: case 1: case 2: f32.push_back(-0.0f); break;
+                case 3: case 4: case 5: f32.push_back(0.0f); break;
+                case 6: f32.push_back(INFINITY); break;
+                case 7: f32.push_back(-INFINITY); break;
+                case 8: f32.push_back(static_cast<float>(rng() % 100) - 50.0f); break;
+                default: { uint32_t bits = static_cast<uint32_t>(rng()); float x; std::memcpy(&x, &bits, sizeof x); f32.push_back(std::isnan(x) ? 1.5f : x); }
+            }
+            zeros32.push_back(i % 3 == 0 ? -0.0f : 0.0f);
+            few32.push_back(static_cast<int32_t>(rng() % 7) - 3);
+            u32.push_back(static_cast<uint32_t>(rng()));
+            i16.push_back(static_cast<int16_t>(rng()));
+            u8.push_back(static_cast<uint8_t>(rng()));
+            rev8.push_back(static_cast<char>((n - i) % 200 - 100));
         }
         check_plain(f, "double with zeros");
         check_plain(zeros, "double all zeros");
@@ -438,6 +459,13 @@ void test_plain_keys(size_t max_n) {
         check_plain(u, "uint64 random");
         check_plain(few, "int64 few unique");
         check_plain(rev, "size_t reversed");
+        check_plain(f32, "float with zeros");
+        check_plain(zeros32, "float all zeros");
+        check_plain(few32, "int32 few unique");
+        check_plain(u32, "uint32 random");
+        check_plain(i16, "int16 random");
+        check_plain(u8, "uint8 random");
+        check_plain(rev8, "char reversed");
     }
     {   // pointers, by address (a char pointer would be a C string)
         std::vector<int> ints(5000);
@@ -651,9 +679,10 @@ void alloc_failure_case(const char* name, const std::string& pattern, size_t n) 
     }
 }
 
-// The keys-only route of a plain vector of 64-bit keys: the key array, the
-// scratch, and for doubles the ranks of the negative zeros; each failure
-// falls back to std::stable_sort and the result is the same, bit for bit.
+// The keys-only route of a plain vector of keys: the key array, the
+// scratch, and for doubles and floats the ranks of the negative zeros; each
+// failure falls back to std::stable_sort and the result is the same, bit
+// for bit.
 template <class K>
 void alloc_failure_plain(const char* name, const std::vector<K>& in) {
     std::vector<K> w = in;
@@ -691,6 +720,12 @@ void test_allocation_failure() {
         std::vector<uint64_t> u;
         for (size_t i = 0; i < 5000; ++i) u.push_back(rng());
         alloc_failure_plain<uint64_t>("uint64 random", u);
+        std::vector<float> f;
+        for (size_t i = 0; i < 5000; ++i) f.push_back(i % 5 == 0 ? -0.0f : (i % 5 == 1 ? 0.0f : static_cast<float>(rng() % 1000) - 500.0f));
+        alloc_failure_plain<float>("float with zeros", f);
+        std::vector<int32_t> i32;
+        for (size_t i = 0; i < 5000; ++i) i32.push_back(static_cast<int32_t>(rng()));
+        alloc_failure_plain<int32_t>("int32 random", i32);
     }
     alloc_failure_case<int32_t>("int32", "random", 5000);
     alloc_failure_case<int32_t>("int32", "nearly_sorted", 20000);

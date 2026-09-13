@@ -10,8 +10,8 @@ pub fn reverse_all<V: Arr>(a: V, n: usize) {
     {
         use crate::view::Hooks;
         let sz = core::mem::size_of::<V::T>();
-        if !<V::H as Hooks>::COUNTED && (sz == 8 || sz == 16) && crate::cpu::have_avx2() {
-            // SAFETY: AVX2 was detected; the view holds n elements of 8 or 16 bytes.
+        if !<V::H as Hooks>::COUNTED && (sz == 4 || sz == 8 || sz == 16) && crate::cpu::have_avx2() {
+            // SAFETY: AVX2 was detected; the view holds n elements of 4, 8 or 16 bytes.
             unsafe { crate::simd::x86::reverse_avx2::<V::T>(a.data(), n) };
             return;
         }

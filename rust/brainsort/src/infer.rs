@@ -7,11 +7,14 @@
 //! window is tested against a strided sample of adjacent-pair outcomes of
 //! the comparator; a window that agrees with all of them is sorted by the
 //! record path, the result is gathered into a buffer and verified with one
-//! sequential comparator pass. Equal runs are the comparator's equality
-//! classes, and sorting each by original index restores stability even when
-//! the window is finer than the comparator. Only a comparator that
-//! disagrees in direction somewhere fails the guess; the input is then
-//! still untouched and goes to the comparison sort.
+//! sequential comparator pass: one call per pair of neighbours with the
+//! same window key (the stable sort left them in index order), the
+//! three-way outcome where the key changes. A class of the comparator
+//! that spans several window keys is sorted by original index, which
+//! restores stability even when the window is finer than the comparator.
+//! Only a comparator that disagrees in direction somewhere fails the
+//! guess; the input is then still untouched and goes to the comparison
+//! sort.
 use crate::algorithm::{Scratch, brainsort_impl};
 use crate::api::{Buf, COMPARATOR_ROUTE_MAX, ELEMENT_ROUTE_MAX, INFER_MIN, PrescanResult, SMALL_SORT, Shape, ord3, prescan_cmp, reverse_stable, small_sort, sort_by_indices, sort_displaced_elements};
 use crate::key::{f32_radix, f64_radix};
@@ -177,6 +180,9 @@ fn infer<T: PlainBytes, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> O
         if ks > sz {
             continue;
         }
+        if best.is_some_and(|(_, b)| ks < b.kind.size()) {
+            break; // a narrower window cannot win
+        }
         let mut off = 0;
         while off + ks <= sz {
             for desc in [false, true] {
@@ -205,9 +211,9 @@ fn infer<T: PlainBytes, F: FnMut(&T, &T) -> Ordering>(v: &[T], cmp: &mut F) -> O
 }
 
 /// Sorts `v` by the candidate through the records, verifies the gathered
-/// result with the comparator and restores stability inside equal runs.
-/// Ok(false) with `v` untouched when the comparator disagrees with the
-/// candidate somewhere.
+/// result with the comparator and restores stability inside the
+/// comparator's classes. Ok(false) with `v` untouched when the comparator
+/// disagrees with the candidate somewhere.
 fn sort_verified<T: PlainBytes, A: Alloc, R: Record, F: FnMut(&T, &T) -> Ordering>(v: &mut [T], c: Cand, cmp: &mut F, make: impl Fn(u64, u32) -> R) -> Result<bool, AllocError> {
     let n = v.len();
     let sz = core::mem::size_of::<T>();
@@ -231,33 +237,54 @@ fn sort_verified<T: PlainBytes, A: Alloc, R: Record, F: FnMut(&T, &T) -> Orderin
             ptr::copy_nonoverlapping(first.add((*rec.add(i)).index() as usize), t.add(i), 1);
         }
         let out = core::slice::from_raw_parts_mut(t, n);
-        // The equal run [s, i) is a class of the comparator: its elements go
-        // into index order.
-        let fix_run = |out: &mut [T], s: usize, e: usize| {
+        // A class [s, e) of the comparator that spans several window keys:
+        // its elements go into index order.
+        let fix_class = |out: &mut [T], s: usize, e: usize| {
             let run = core::slice::from_raw_parts_mut(rec.add(s), e - s);
-            if run.windows(2).all(|w| w[0].index() < w[1].index()) {
-                return;
-            }
             run.sort_unstable_by_key(|r| r.index());
             for (k, r) in run.iter().enumerate() {
                 ptr::copy_nonoverlapping(first.add(r.index() as usize), out.as_mut_ptr().add(s + k), 1);
             }
         };
+        // Neighbours with one window key are in index order already and
+        // only have to not descend; where the key changes the outcome
+        // decides whether a class ends (less), the guess failed (greater),
+        // or a class spans two keys (equal). `s` is the start of the current
+        // class while it spans keys, otherwise the last key change that
+        // ended a class: the true start is then found by walking back over
+        // the same-key pairs.
         let mut s = 0;
+        let mut mixed = false;
         for i in 1..n {
+            if !mixed && R::compare(*rec.add(i - 1), *rec.add(i)) == 0 {
+                if cmp(&out[i - 1], &out[i]) == Ordering::Greater {
+                    return Ok(false);
+                }
+                continue;
+            }
             match cmp(&out[i - 1], &out[i]) {
-                Ordering::Greater => return Ok(false),
                 Ordering::Less => {
-                    if i - s > 1 {
-                        fix_run(out, s, i);
+                    if mixed {
+                        fix_class(out, s, i);
+                        mixed = false;
                     }
                     s = i;
                 }
-                Ordering::Equal => {}
+                Ordering::Greater => return Ok(false),
+                Ordering::Equal => {
+                    if !mixed {
+                        mixed = true;
+                        let mut j = i - 1;
+                        while j > s && cmp(&out[j - 1], &out[j]) != Ordering::Less {
+                            j -= 1;
+                        }
+                        s = j;
+                    }
+                }
             }
         }
-        if n - s > 1 {
-            fix_run(out, s, n);
+        if mixed {
+            fix_class(out, s, n);
         }
         ptr::copy_nonoverlapping(t, first, n);
     }
@@ -293,17 +320,16 @@ pub fn sort_by_inferred_impl<T: PlainBytes, A: Alloc, F: FnMut(&T, &T) -> Orderi
     if nearly && indexed && size > COMPARATOR_ROUTE_MAX && sort_by_indices::<T, A, F>(v, &mut cmp, true, true, false) {
         return;
     }
-    if indexed
-        && n >= INFER_MIN
-        && let Some(c) = infer(v, &mut cmp)
-    {
-        let done = if c.kind.wide() {
-            sort_verified::<T, A, Rec64, F>(v, c, &mut cmp, |r, i| Rec64 { key: (r ^ 0x8000_0000_0000_0000) as i64, idx: i, pad: 0 })
-        } else {
-            sort_verified::<T, A, Rec32, F>(v, c, &mut cmp, |r, i| Rec32 { key: ((r as u32) ^ 0x8000_0000) as i32, idx: i })
-        };
-        if let Ok(true) = done {
-            return;
+    if indexed && n >= INFER_MIN {
+        if let Some(c) = infer(v, &mut cmp) {
+            let done = if c.kind.wide() {
+                sort_verified::<T, A, Rec64, F>(v, c, &mut cmp, |r, i| Rec64 { key: (r ^ 0x8000_0000_0000_0000) as i64, idx: i, pad: 0 })
+            } else {
+                sort_verified::<T, A, Rec32, F>(v, c, &mut cmp, |r, i| Rec32 { key: ((r as u32) ^ 0x8000_0000) as i32, idx: i })
+            };
+            if let Ok(true) = done {
+                return;
+            }
         }
     }
     if indexed && size > ELEMENT_ROUTE_MAX && sort_by_indices::<T, A, F>(v, &mut cmp, nearly, false, true) {

@@ -26,7 +26,8 @@
 // SimdKind::i32 promises sizeof(T) == 8 with a signed 32-bit key whose signed
 // order equals the element order in bytes 0-3; i64 promises sizeof(T) == 16
 // and a signed 64-bit key in bytes 0-7; f64 the same with an IEEE double;
-// k64 promises sizeof(T) == 8 and that the element is the signed 64-bit key.
+// k64 promises sizeof(T) == 8 and that the element is the signed 64-bit key;
+// k32 promises sizeof(T) == 4 and that the element is the signed 32-bit key.
 #pragma once
 
 #include "brainsort/detail/config.hpp"
@@ -42,7 +43,7 @@
 
 namespace brainsort {
 
-enum class SimdKind { none, i32, i64, f64, k64 };
+enum class SimdKind { none, i32, i64, f64, k64, k32 };
 
 template <class T> struct elem_traits;
 

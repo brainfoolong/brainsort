@@ -122,8 +122,9 @@ fn self_keyed() {
     test_self_keyed::<u128>("u128", mid);
 }
 
-/// Plain slices of 64-bit keys take the keys-only route: the sorted keys
-/// are written back bit for bit, the two zeros of an `f64` in input order.
+/// Plain slices of keys take the keys-only route: the sorted keys are
+/// written back bit for bit, the two zeros of an `f32` or `f64` in input
+/// order.
 fn check_plain<K: Natural + Clone + std::fmt::Debug + brainsort::Key>(v: &[K], ctx: &str) {
     let mut a = v.to_vec();
     let mut b = v.to_vec();
@@ -134,7 +135,7 @@ fn check_plain<K: Natural + Clone + std::fmt::Debug + brainsort::Key>(v: &[K], c
     }
 }
 #[test]
-fn plain_64bit_keys() {
+fn plain_keys() {
     let mut rng = Rng::new(5);
     let sizes: &[usize] = if quick() { &[33, 1000, 4097] } else { &[33, 1000, 4097, 100_000] };
     for &n in sizes {
@@ -165,6 +166,35 @@ fn plain_64bit_keys() {
         check_plain(&i, "i64 few unique");
         let s: Vec<usize> = (0..n).map(|i| n - i).collect();
         check_plain(&s, "usize reversed");
+        let pick32 = |rng: &mut Rng| -> f32 {
+            match rng.next() % 16 {
+                0..=2 => -0.0,
+                3..=5 => 0.0,
+                6 => f32::NAN,
+                7 => -f32::NAN,
+                8 => f32::INFINITY,
+                9 => f32::NEG_INFINITY,
+                10 => (rng.next() % 100) as f32 - 50.0,
+                _ => {
+                    let x = f32::from_bits(rng.next() as u32); // any bit pattern; NaN payloads are covered above
+                    if x.is_nan() { 1.5 } else { x }
+                }
+            }
+        };
+        let f: Vec<f32> = (0..n).map(|_| pick32(&mut rng)).collect();
+        check_plain(&f, "f32 with zeros");
+        let zeros: Vec<f32> = (0..n).map(|i| if i % 3 == 0 { -0.0 } else { 0.0 }).collect();
+        check_plain(&zeros, "f32 all zeros");
+        let few: Vec<i32> = (0..n).map(|_| (rng.next() % 7) as i32 - 3).collect();
+        check_plain(&few, "i32 few unique");
+        let u: Vec<u32> = (0..n).map(|_| rng.next() as u32).collect();
+        check_plain(&u, "u32 random");
+        let h: Vec<i16> = (0..n).map(|_| rng.next() as i16).collect();
+        check_plain(&h, "i16 random");
+        let b: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
+        check_plain(&b, "u8 random");
+        let r: Vec<i8> = (0..n).map(|i| (((n - i) % 200) as i32 - 100) as i8).collect();
+        check_plain(&r, "i8 reversed");
     }
     // raw pointers, by address
     let bytes = vec![0u8; 5000];

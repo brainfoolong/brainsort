@@ -1237,10 +1237,10 @@ pub fn radix_route<V: Arr>(
     }
     let est = if mask_known { mask } else { mask | info.sample_mask };
     let have_range = have_pivot && !info.all_equal;
-    // Two to four distinct sampled keys on 8-byte elements: the partition
-    // sort, no counters at all.
+    // Two to four distinct sampled keys on 4- or 8-byte elements: the
+    // partition sort, no counters at all.
     if !<V::T as Elem>::CHUNKED
-        && core::mem::size_of::<V::T>() == 8
+        && matches!(core::mem::size_of::<V::T>(), 4 | 8)
         && have_pivot
         && info.n_distinct >= 2
         && info.n_distinct <= 4

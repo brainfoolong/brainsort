@@ -73,8 +73,8 @@ fn case<K: Gen + Clone + Natural + brainsort::Key + std::fmt::Debug>(name: &str,
     }
 }
 
-/// The keys-only route of a plain slice of 64-bit keys: the key array, the
-/// scratch, and for `f64` the ranks of the negative zeros; each failure
+/// The keys-only route of a plain slice of keys: the key array, the
+/// scratch, and for `f32` and `f64` the ranks of the negative zeros; each failure
 /// falls back to the standard library's sort and the result is the same,
 /// bit for bit.
 fn plain_case<K: Clone + Natural + brainsort::Key + std::fmt::Debug>(name: &str, input: &[K]) {
@@ -115,6 +115,16 @@ fn plain_key_allocation_points() {
     plain_case("f64 with zeros", &f);
     let u: Vec<u64> = (0..n).map(|_| rng.next()).collect();
     plain_case("u64 random", &u);
+    let f: Vec<f32> = (0..n)
+        .map(|i| match i % 5 {
+            0 => -0.0,
+            1 => 0.0,
+            _ => (rng.next() % 1000) as f32 - 500.0,
+        })
+        .collect();
+    plain_case("f32 with zeros", &f);
+    let i: Vec<i32> = (0..n).map(|_| rng.next() as i32).collect();
+    plain_case("i32 random", &i);
 }
 
 /// The comparator sort of elements over 16 bytes: the index array, then

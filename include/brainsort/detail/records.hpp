@@ -14,8 +14,8 @@
 //   CompRec   anything else: a sequence of fixed and byte-string parts
 // Several fixed keys are packed into one radix value (a pair<int, int> is
 // one 64-bit key), so composite keys of integers stay on the fast paths.
-// A plain range of 64-bit keys (int64, uint64, double, a pointer) needs no
-// index: the keys themselves are sorted as Key64 and written back.
+// A plain range of keys (int32, int64, double, a pointer) needs no index:
+// the keys themselves are sorted as Key32 or Key64 and written back.
 #pragma once
 
 #include "brainsort/detail/keys.hpp"
@@ -43,12 +43,15 @@ struct Rec64 {
     uint32_t idx;
     uint32_t pad;
 };
-// The key alone, for a range whose elements are 64-bit keys that invert
-// from their radix form: half the bytes of a Rec64, four per vector.
+// The key alone, for a range whose elements are keys that invert from
+// their radix form: half the bytes of the record, four or eight per vector.
 struct Key64 {
     int64_t key;
 };
-static_assert(sizeof(Rec32) == 8 && sizeof(Rec64) == 16 && sizeof(Key64) == 8);
+struct Key32 {
+    int32_t key;
+};
+static_assert(sizeof(Rec32) == 8 && sizeof(Rec64) == 16 && sizeof(Key64) == 8 && sizeof(Key32) == 4);
 
 // ---- string record ----------------------------------------------------------------
 template <bool Desc>
@@ -111,6 +114,17 @@ template <> struct elem_traits<detail::Key64> {
     static int      compare(T a, T b) { return a.key < b.key ? -1 : (b.key < a.key ? 1 : 0); }
     static int      compare_from(T a, T b, int) { return compare(a, b); }
     static key_type radix_key(T a, int) { return static_cast<uint64_t>(a.key) ^ 0x8000000000000000ull; }
+    static bool     chunk_ends(T, int) { return true; }
+};
+template <> struct elem_traits<detail::Key32> {
+    using T = detail::Key32;
+    static constexpr bool     chunked = false;
+    static constexpr SimdKind simd    = SimdKind::k32;
+    using key_type = uint32_t;
+    static bool     less(T a, T b) { return a.key < b.key; }
+    static int      compare(T a, T b) { return a.key < b.key ? -1 : (b.key < a.key ? 1 : 0); }
+    static int      compare_from(T a, T b, int) { return compare(a, b); }
+    static key_type radix_key(T a, int) { return static_cast<uint32_t>(a.key) ^ 0x80000000u; }
     static bool     chunk_ends(T, int) { return true; }
 };
 template <bool Desc> struct elem_traits<detail::StrRec<Desc>> {
@@ -325,36 +339,46 @@ inline void set_index(Rec64& r, uint32_t i) noexcept { r.idx = i; }
 template <bool D> inline void set_index(StrRec<D>& r, uint32_t i) noexcept { r.idx = i; }
 template <int... Ks> inline void set_index(CompRec<Ks...>& r, uint32_t i) noexcept { r.idx = i; }
 
-// The key of a sorted fixed record, for the write-back of self-keyed elements.
-template <class K> inline K key_of(const Rec32& r) noexcept {
-    return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint32_t>(r.key) ^ 0x80000000u));
-}
-template <class K> inline K key_of(const Rec64& r) noexcept {
-    return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint64_t>(r.key) ^ 0x8000000000000000ull));
-}
-
-// The keys-only element of a 64-bit key, and the key it stands for.
-template <class K> inline Key64 key64_of(const K& k) noexcept {
-    return Key64{static_cast<int64_t>(static_cast<uint64_t>(key_traits<K>::to_radix(k)) ^ 0x8000000000000000ull)};
+// The keys-only element of a key, and the key it stands for.
+template <class KE, class K> inline KE key_elem_of(const K& k) noexcept {
+    if constexpr (std::is_same_v<KE, Key64>) return Key64{static_cast<int64_t>(static_cast<uint64_t>(key_traits<K>::to_radix(k)) ^ 0x8000000000000000ull)};
+    else return Key32{static_cast<int32_t>(static_cast<uint32_t>(key_traits<K>::to_radix(k)) ^ 0x80000000u)};
 }
 template <class K> inline K key_of(const Key64& r) noexcept {
     return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint64_t>(r.key) ^ 0x8000000000000000ull));
 }
-// A double is written back from its key as well: the radix transform is a
-// bijection on every bit pattern except that -0.0 and +0.0 share the key
-// whose signed form is 0, so a negative zero is noted separately.
+template <class K> inline K key_of(const Key32& r) noexcept {
+    return key_traits<K>::from_radix(static_cast<typename key_traits<K>::radix_type>(static_cast<uint32_t>(r.key) ^ 0x80000000u));
+}
+// A double or a float is written back from its key as well: the radix
+// transform is a bijection on every bit pattern except that -0.0 and +0.0
+// share the key whose signed form is 0, so a negative zero is noted
+// separately.
 inline bool is_negative_zero(double d) noexcept {
     uint64_t bits;
     std::memcpy(&bits, &d, sizeof bits);
     return bits == 0x8000000000000000ull;
 }
-inline double double_of(const Key64& r) noexcept {
+inline bool is_negative_zero(float f) noexcept {
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof bits);
+    return bits == 0x80000000u;
+}
+inline double real_of(const Key64& r) noexcept {
     const uint64_t sign = 0x8000000000000000ull;
     const uint64_t u    = static_cast<uint64_t>(r.key) ^ sign;
     const uint64_t bits = u & sign ? (u & ~sign) : (sign | (sign - u));
     double d;
     std::memcpy(&d, &bits, sizeof d);
     return d;
+}
+inline float real_of(const Key32& r) noexcept {
+    const uint32_t sign = 0x80000000u;
+    const uint32_t u    = static_cast<uint32_t>(r.key) ^ sign;
+    const uint32_t bits = u & sign ? (u & ~sign) : (sign | (sign - u));
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
 }
 
 }  // namespace detail

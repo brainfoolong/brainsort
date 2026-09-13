@@ -24,7 +24,7 @@ use core::arch::x86_64::*;
 /// block could end the current run: a descent in a non-decreasing run, an
 /// ascent or a tie in a strictly decreasing one.
 #[inline(always)]
-fn scout_block<const V: usize>(r: &mut ScoutResult, dm: u32, am: u32, i: usize, bit_of: &[u8; 8]) {
+fn scout_block<const V: usize>(r: &mut ScoutResult, dm: u32, am: u32, i: usize, bit_of: &[u8]) {
     r.descents += dm.count_ones() as usize;
     r.ascents += am.count_ones() as usize;
     if !r.tracking {
@@ -231,6 +231,49 @@ unsafe fn scout_avx2_k64<T: Elem>(p: *const T, n: usize) -> ScoutResult {
     }
 }
 
+/// Vectorised scout for 4-byte elements that are the key, 16 elements per
+/// block: two vectors of eight, each compared with the vector one element
+/// behind it; bit e of the block mask belongs to element e.
+#[target_feature(enable = "avx2")]
+unsafe fn scout_avx2_k32<T: Elem>(p: *const T, n: usize) -> ScoutResult {
+    const BIT_OF: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut r = ScoutResult::default();
+    // SAFETY: the caller passes n >= 1 elements of 4 bytes.
+    unsafe {
+        let vk0 = _mm256_set1_epi32(skey32(&*p));
+        let mut vmask = _mm256_setzero_si256();
+        let (mut i, mut next_check) = (1usize, COMMIT_BLOCK);
+        while i + 16 <= n {
+            let ld = |k: usize| _mm256_loadu_si256(p.add(k) as *const __m256i);
+            let (c0, c1) = (ld(i), ld(i + 8));
+            let (q0, q1) = (ld(i - 1), ld(i + 7));
+            vmask = _mm256_or_si256(vmask, _mm256_or_si256(_mm256_xor_si256(c0, vk0), _mm256_xor_si256(c1, vk0)));
+            let mm = |x: __m256i| _mm256_movemask_ps(_mm256_castsi256_ps(x)) as u32;
+            let d = mm(_mm256_cmpgt_epi32(q0, c0)) | (mm(_mm256_cmpgt_epi32(q1, c1)) << 8);
+            let u = mm(_mm256_cmpgt_epi32(c0, q0)) | (mm(_mm256_cmpgt_epi32(c1, q1)) << 8);
+            scout_block::<16>(&mut r, d, u, i, &BIT_OF);
+            if i >= next_check {
+                next_check += COMMIT_BLOCK;
+                if commit_now(&r, i + 16) {
+                    r.committed = true;
+                    break;
+                }
+            }
+            i += 16;
+        }
+        let mut lanes = [0u64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vmask);
+        let m = lanes[0] | lanes[1] | lanes[2] | lanes[3];
+        r.mask = ((m | (m >> 32)) as u32) as u64;
+        if r.committed {
+            return r;
+        }
+        scout_tail(&mut r, p, i, n);
+        finish_runs(&mut r, n);
+        r
+    }
+}
+
 /// The vector scout of an element type with a SIMD layout.
 ///
 /// # Safety
@@ -242,17 +285,18 @@ pub unsafe fn scout_avx2<T: Elem>(p: *const T, n: usize) -> ScoutResult {
         match T::SIMD {
             SimdKind::I32 => scout_avx2_32(p, n),
             SimdKind::K64 => scout_avx2_k64(p, n),
+            SimdKind::K32 => scout_avx2_k32(p, n),
             SimdKind::F64 => scout_avx2_64::<T, true>(p, n),
             _ => scout_avx2_64::<T, false>(p, n),
         }
     }
 }
 
-/// In-place reversal of 8- or 16-byte elements, four or two per vector
-/// from each end. Type-agnostic: it moves bytes.
+/// In-place reversal of 4-, 8- or 16-byte elements, eight, four or two per
+/// vector from each end. Type-agnostic: it moves bytes.
 ///
 /// # Safety
-/// AVX2 is available; `p` holds `n` elements of 8 or 16 bytes.
+/// AVX2 is available; `p` holds `n` elements of 4, 8 or 16 bytes.
 #[target_feature(enable = "avx2")]
 pub unsafe fn reverse_avx2<T: Copy>(p: *mut T, n: usize) {
     let v = 32 / core::mem::size_of::<T>();
@@ -262,11 +306,12 @@ pub unsafe fn reverse_avx2<T: Copy>(p: *mut T, n: usize) {
         while hi - lo >= 2 * v {
             let a = _mm256_loadu_si256(p.add(lo) as *const __m256i);
             let b = _mm256_loadu_si256(p.add(hi - v) as *const __m256i);
-            let (ra, rb) = if core::mem::size_of::<T>() == 8 {
-                (_mm256_permute4x64_epi64::<0b00_01_10_11>(a), _mm256_permute4x64_epi64::<0b00_01_10_11>(b))
-            } else {
-                (_mm256_permute4x64_epi64::<0b01_00_11_10>(a), _mm256_permute4x64_epi64::<0b01_00_11_10>(b))
+            let rev = |x: __m256i| match core::mem::size_of::<T>() {
+                4 => _mm256_permutevar8x32_epi32(x, _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0)),
+                8 => _mm256_permute4x64_epi64::<0b00_01_10_11>(x),
+                _ => _mm256_permute4x64_epi64::<0b01_00_11_10>(x),
             };
+            let (ra, rb) = (rev(a), rev(b));
             _mm256_storeu_si256(p.add(lo) as *mut __m256i, rb);
             _mm256_storeu_si256(p.add(hi - v) as *mut __m256i, ra);
             lo += v;
@@ -283,12 +328,28 @@ pub unsafe fn reverse_avx2<T: Copy>(p: *mut T, n: usize) {
 // ---- the split ----------------------------------------------------------------------------
 
 /// Lane permutations that compress the selected elements of a vector to
-/// its front: by mask, 4 elements of 2 lanes, or 2 elements of 4 lanes.
+/// its front: by mask, 8 elements of 1 lane (as bytes, 2 KB, widened on
+/// use), 4 elements of 2 lanes, or 2 elements of 4 lanes.
 struct CompressLut {
+    by8: [[u8; 8]; 256],
     by4: [[i32; 8]; 16],
     by2: [[i32; 8]; 4],
 }
 const LUT: CompressLut = {
+    let mut by8 = [[0u8; 8]; 256];
+    let mut m = 0;
+    while m < 256 {
+        let mut o = 0;
+        let mut e = 0u8;
+        while e < 8 {
+            if (m >> e) & 1 == 1 {
+                by8[m][o] = e;
+                o += 1;
+            }
+            e += 1;
+        }
+        m += 1;
+    }
     let mut by4 = [[0i32; 8]; 16];
     let mut m = 0;
     while m < 16 {
@@ -322,7 +383,7 @@ const LUT: CompressLut = {
         }
         m += 1;
     }
-    CompressLut { by4, by2 }
+    CompressLut { by8, by4, by2 }
 };
 
 /// Per-kind compare: for a loaded vector, the "< pivot" element mask (bit
@@ -350,6 +411,10 @@ unsafe fn lt_mask<T: Elem>(v: __m256i, vpivot: __m256i, vk0: __m256i, vmask: &mu
                 let lt = _mm256_cmpgt_epi64(vpivot, v); // every lane is a key
                 _mm256_movemask_pd(_mm256_castsi256_pd(lt)) as u32 // one bit per element
             }
+            SimdKind::K32 => {
+                *vmask = _mm256_or_si256(*vmask, _mm256_xor_si256(v, vk0));
+                _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(vpivot, v))) as u32 // eight keys, one bit each
+            }
             _ => {
                 // SAFETY: called within an AVX2 function.
                 let sign = _mm256_set1_epi64x(0x8000_0000_0000_0000u64 as i64);
@@ -367,7 +432,7 @@ unsafe fn lt_mask<T: Elem>(v: __m256i, vpivot: __m256i, vk0: __m256i, vmask: &mu
 #[inline]
 unsafe fn pivot_vec_key<T: Elem>(pk: u64) -> __m256i {
     // SAFETY: called within an AVX2 function.
-    unsafe { if T::SIMD == SimdKind::I32 { _mm256_set1_epi32((pk as u32 ^ 0x8000_0000) as i32) } else { _mm256_set1_epi64x((pk ^ 0x8000_0000_0000_0000) as i64) } }
+    unsafe { if matches!(T::SIMD, SimdKind::I32 | SimdKind::K32) { _mm256_set1_epi32((pk as u32 ^ 0x8000_0000) as i32) } else { _mm256_set1_epi64x((pk ^ 0x8000_0000_0000_0000) as i64) } }
 }
 /// The reference key for the mask, in the domain the mask is folded in.
 #[target_feature(enable = "avx2")]
@@ -376,7 +441,7 @@ unsafe fn key0_vec<T: Elem>(e: &T) -> __m256i {
     // SAFETY: called within an AVX2 function.
     unsafe {
         match T::SIMD {
-            SimdKind::I32 => _mm256_set1_epi32(skey32(e)),
+            SimdKind::I32 | SimdKind::K32 => _mm256_set1_epi32(skey32(e)),
             SimdKind::I64 | SimdKind::K64 => _mm256_set1_epi64x(skey64(e)),
             _ => _mm256_set1_epi64x(T::radix_key(*e, 0).to_u64() as i64),
         }
@@ -394,6 +459,9 @@ unsafe fn fold_mask<T: Elem>(vmask: __m256i) -> u64 {
             ((l[0] | l[1] | l[2] | l[3]) as u32) as u64 // int32 keys in the low half of every 64-bit lane
         } else if T::SIMD == SimdKind::K64 {
             l[0] | l[1] | l[2] | l[3] // every lane a key
+        } else if T::SIMD == SimdKind::K32 {
+            let m = l[0] | l[1] | l[2] | l[3]; // every 32-bit lane a key
+            ((m | (m >> 32)) as u32) as u64
         } else {
             l[0] | l[2] // 64-bit keys in lanes 0 and 2
         }
@@ -401,12 +469,16 @@ unsafe fn fold_mask<T: Elem>(vmask: __m256i) -> u64 {
 }
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn compress_store<T>(dst: *mut T, v: __m256i, mask: u32, lanes4: bool) {
-    // SAFETY: called within an AVX2 function.
+unsafe fn compress_store<T>(dst: *mut T, v: __m256i, mask: u32, v_per: usize) {
+    // SAFETY: called within an AVX2 function; the table rows have 8 entries.
     unsafe {
-        let idx = if lanes4 { &LUT.by4[mask as usize] } else { &LUT.by2[mask as usize] };
+        let idx = match v_per {
+            8 => _mm256_cvtepu8_epi32(_mm_loadl_epi64(LUT.by8[mask as usize].as_ptr() as *const __m128i)),
+            4 => _mm256_loadu_si256(LUT.by4[mask as usize].as_ptr() as *const __m256i),
+            _ => _mm256_loadu_si256(LUT.by2[mask as usize].as_ptr() as *const __m256i),
+        };
         // SAFETY: the caller guarantees 32 writable bytes at dst.
-        unsafe { _mm256_storeu_si256(dst as *mut __m256i, _mm256_permutevar8x32_epi32(v, _mm256_loadu_si256(idx.as_ptr() as *const __m256i))) };
+        unsafe { _mm256_storeu_si256(dst as *mut __m256i, _mm256_permutevar8x32_epi32(v, idx)) };
     }
 }
 
@@ -435,8 +507,8 @@ pub unsafe fn split_forward_avx2<V: Arr>(a: V, buf: V, n: usize, cap: usize, piv
             let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
             let lt = lt_mask::<V::T>(v, vp, vk0, &mut vmask);
             let ge = !lt & ((1u32 << v_per) - 1);
-            compress_store(pa.add(w), v, lt, v_per == 4);
-            compress_store(pb.add(b), v, ge, v_per == 4);
+            compress_store(pa.add(w), v, lt, v_per);
+            compress_store(pb.add(b), v, ge, v_per);
             w += lt.count_ones() as usize;
             b += ge.count_ones() as usize;
             i += v_per;
@@ -486,10 +558,10 @@ unsafe fn cmp_domain<T: Elem>(v: __m256i) -> __m256i {
 #[inline]
 unsafe fn eq_keys<T: Elem>(x: __m256i, y: __m256i) -> __m256i {
     // SAFETY: called within an AVX2 function.
-    unsafe { if T::SIMD == SimdKind::I32 { _mm256_cmpeq_epi32(x, y) } else { _mm256_cmpeq_epi64(x, y) } }
+    unsafe { if matches!(T::SIMD, SimdKind::I32 | SimdKind::K32) { _mm256_cmpeq_epi32(x, y) } else { _mm256_cmpeq_epi64(x, y) } }
 }
 
-/// First pass with AVX2, for 8-byte elements (four per vector): the forward
+/// First pass with AVX2, for 4- and 8-byte elements: the forward
 /// split with the class counts and the membership check folded in. Same
 /// overflow contract as split2_scalar.
 ///
@@ -538,8 +610,8 @@ pub unsafe fn split2_avx2<V: Arr>(
             let d = cmp_domain::<V::T>(v);
             let eq = _mm256_or_si256(_mm256_or_si256(eq_keys::<V::T>(d, e0), eq_keys::<V::T>(d, e1)), _mm256_or_si256(eq_keys::<V::T>(d, e2), eq_keys::<V::T>(d, e3)));
             vbad = _mm256_or_si256(vbad, _mm256_andnot_si256(eq, _mm256_set1_epi32(-1)));
-            compress_store(pa.add(w), v, lt, v_per == 4);
-            compress_store(pb.add(b), v, ge, v_per == 4);
+            compress_store(pa.add(w), v, lt, v_per);
+            compress_store(pb.add(b), v, ge, v_per);
             w += lt.count_ones() as usize;
             b += ge.count_ones() as usize;
             i += v_per;
@@ -580,7 +652,7 @@ pub unsafe fn split2_avx2<V: Arr>(
     }
 }
 
-/// Second pass with AVX2 for 8-byte elements: compress-store to two
+/// Second pass with AVX2 for 4- and 8-byte elements: compress-store to two
 /// destinations inside one array. The vector loop runs only while both
 /// cursors have a full vector of room; the scalar loops finish.
 ///
@@ -601,8 +673,8 @@ pub unsafe fn partition2_avx2<T: Elem>(src: *const T, m: usize, dst: *mut T, o0:
             let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
             let lt = lt_mask::<T>(v, vp, vk0, &mut junk);
             let ge = !lt & ((1u32 << v_per) - 1);
-            compress_store(dst.add(c0), v, lt, v_per == 4);
-            compress_store(dst.add(c1), v, ge, v_per == 4);
+            compress_store(dst.add(c0), v, lt, v_per);
+            compress_store(dst.add(c1), v, ge, v_per);
             c0 += lt.count_ones() as usize;
             c1 += ge.count_ones() as usize;
             i += v_per;

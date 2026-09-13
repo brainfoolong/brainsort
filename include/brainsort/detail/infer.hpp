@@ -6,11 +6,14 @@
 // descending. Every such window is tested against a strided sample of
 // adjacent-pair outcomes of the comparator; a window that agrees with all
 // of them is sorted by the record path, the result is gathered into a
-// buffer and verified with one sequential comparator pass. Equal runs are
-// the comparator's equality classes, and sorting each by original index
-// restores stability even when the window is finer than the comparator.
-// Only a comparator that disagrees in direction somewhere fails the guess;
-// the range is then still untouched and goes to the comparison sort.
+// buffer and verified with one sequential comparator pass: one call per
+// pair of neighbours with the same window key (the stable sort left them
+// in index order), the three-way outcome where the key changes. A class of
+// the comparator that spans several window keys is sorted by original
+// index, which restores stability even when the window is finer than the
+// comparator. Only a comparator that disagrees in direction somewhere
+// fails the guess; the range is then still untouched and goes to the
+// comparison sort.
 #pragma once
 #include "brainsort/detail/algorithm.hpp"
 #include "brainsort/detail/config.hpp"
@@ -129,6 +132,7 @@ inline bool infer(const T* v, size_t n, Comp& comp, Cand& best) {
     for (Kind kind : kKinds) {
         const size_t ks = kind_size(kind);
         if (ks > sz) continue;
+        if (found && ks < kind_size(best.kind)) break;   // a narrower window cannot win
         for (size_t off = 0; off + ks <= sz; off += ks) {
             for (bool desc : {false, true}) {
                 const Cand c{off, kind, desc};
@@ -148,9 +152,9 @@ inline bool infer(const T* v, size_t n, Comp& comp, Cand& best) {
 }
 
 // Sorts v[0,n) by the candidate through records of type Rec, verifies the
-// gathered result with the comparator and restores stability inside equal
-// runs. False, with the range untouched, when the comparator disagrees with
-// the candidate somewhere.
+// gathered result with the comparator and restores stability inside the
+// comparator's classes. False, with the range untouched, when the
+// comparator disagrees with the candidate somewhere.
 template <class Alloc, class Rec, class T, class Comp>
 inline bool sort_verified(T* v, size_t n, const Cand& c, Comp& comp) {
     constexpr size_t sz = sizeof(T);
@@ -167,25 +171,38 @@ inline bool sort_verified(T* v, size_t n, const Cand& c, Comp& comp) {
     Buf<T, Alloc> tmp(n);
     T* t = tmp.data();
     for (size_t i = 0; i < n; ++i) t[i] = v[rec[i].idx];
-    // The equal run [s, e) is a class of the comparator: its elements go
-    // into index order.
-    auto fix_run = [&](size_t s, size_t e) {
-        bool ordered = true;
-        for (size_t i = s + 1; ordered && i < e; ++i) ordered = rec[i - 1].idx < rec[i].idx;
-        if (ordered) return;
+    // A class [s, e) of the comparator that spans several window keys: its
+    // elements go into index order.
+    auto fix_class = [&](size_t s, size_t e) {
         std::sort(rec + s, rec + e, [](const Rec& a, const Rec& b) { return a.idx < b.idx; });
         for (size_t i = s; i < e; ++i) t[i] = v[rec[i].idx];
     };
-    size_t s = 0;
+    // Neighbours with one window key are in index order already and only
+    // have to not descend; where the key changes the outcome decides
+    // whether a class ends (less), the guess failed (greater), or a class
+    // spans two keys (equal). `s` is the start of the current class while
+    // it spans keys, otherwise the last key change that ended a class: the
+    // true start is then found by walking back over the same-key pairs.
+    size_t s     = 0;
+    bool   mixed = false;
     for (size_t i = 1; i < n; ++i) {
-        if (comp(t[i - 1], t[i])) {            // less: the common case, one call
-            if (i - s > 1) fix_run(s, i);
+        if (!mixed && rec[i - 1].key == rec[i].key) {
+            if (comp(t[i], t[i - 1])) return false;
+            continue;
+        }
+        if (comp(t[i - 1], t[i])) {
+            if (mixed) { fix_class(s, i); mixed = false; }
             s = i;
-        } else if (comp(t[i], t[i - 1])) {     // greater: the guess was wrong
+        } else if (comp(t[i], t[i - 1])) {
             return false;
+        } else if (!mixed) {
+            mixed = true;
+            size_t j = i - 1;
+            while (j > s && !comp(t[j - 1], t[j])) --j;
+            s = j;
         }
     }
-    if (n - s > 1) fix_run(s, n);
+    if (mixed) fix_class(s, n);
     std::memcpy(static_cast<void*>(v), t, n * sizeof(T));
     return true;
 }

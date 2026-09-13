@@ -228,12 +228,11 @@ records, one per element, holding the radix form of the key and the original
 index; sorts the records; then permutes your elements once. Keys of up to 32
 bits become 8-byte records, up to 64 bits 16-byte records, a string a 16-byte
 pointer-and-length record, anything else a composite record sorted chunk by
-chunk. A plain array of 64-bit numbers or pointers needs no index: the keys
-themselves are sorted, 8 bytes per element, and written back (the two zeros
-of a double share a key and are put back by their rank among the zeros);
-plain 32-bit numbers are written back from their records. Nearly sorted
-large elements are permuted by following cycles, which moves only the
-elements that are out of place.
+chunk. A plain array of numbers or pointers needs no index: the keys
+themselves are sorted, 4 or 8 bytes per element, and written back (the two
+zeros of a float or double share a key and are put back by their rank among
+the zeros). Nearly sorted large elements are permuted by following cycles,
+which moves only the elements that are out of place.
 
 A comparator on trivially copyable elements, from 4,096 of them on, first
 has its key inferred: the comparator is asked about a sample of adjacent

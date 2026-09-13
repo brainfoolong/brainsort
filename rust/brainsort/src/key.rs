@@ -224,8 +224,8 @@ pub trait Key {
     /// public API.
     #[doc(hidden)]
     const EXACT_FIXED: bool = false;
-    /// The inverse of the radix transform, when `EXACT_FIXED` (and for
-    /// `f64`, whose two zeros share a radix value and come back as `+0.0`).
+    /// The inverse of the radix transform, when `EXACT_FIXED` (and for `f32`
+    /// and `f64`, whose two zeros share a radix value and come back as `+0.0`).
     /// Not part of the public API.
     #[doc(hidden)]
     fn from_radix(_r: u64) -> Self
@@ -523,6 +523,12 @@ impl Key for f32 {
     #[inline(always)]
     fn cmp_key(&self, other: &Self) -> Ordering {
         f32_radix(*self).cmp(&f32_radix(*other))
+    }
+    #[inline(always)]
+    fn from_radix(r: u64) -> Self {
+        let sign = 0x8000_0000u32;
+        let r = r as u32;
+        f32::from_bits(if r & sign != 0 { r & !sign } else { sign | (sign - r) })
     }
 }
 impl Key for f64 {

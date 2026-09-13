@@ -6,6 +6,18 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- `sort` on a plain slice of keys of up to 32 bits (`i32`, `u32`, the 8-
+  and 16-bit integers, `bool`, `char`, `f32`, any `Key` whose radix form
+  inverts) sorts the keys themselves, 4 bytes per element instead of an
+  8-byte record with an index, and writes them back; the memory of such a
+  sort halves. `-0.0` is kept, as for `f64`. At 100,000 elements
+  (7800X3D, Windows): `i32` random 0.40 to 0.37 ms, from 0.96x of the
+  fastest radix crate to 1.07x; few distinct values 0.17 to 0.14 ms.
+- `sort_by_inferred` verifies its result with one comparator call per
+  pair of neighbours that share the window key, and stops testing
+  narrower windows once a wider one agrees. Same result on every input.
+- The crate compiles on Rust 1.86, its stated minimum, again (a `let`
+  chain had crept into `sort_by_inferred`).
 - `sort_by_inferred` and the `PlainBytes` trait: a comparator sort that
   guesses the key the comparator compares (an aligned window of the
   element read as an integer or a float, ascending or descending) from a

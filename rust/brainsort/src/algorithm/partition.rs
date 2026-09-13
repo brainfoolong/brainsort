@@ -121,7 +121,7 @@ fn split2<V: Arr>(
 ) -> bool {
     #[cfg(all(target_arch = "x86_64", not(brainsort_no_simd)))]
     {
-        if !<V::H as Hooks>::COUNTED && matches!(<V::T as Elem>::SIMD, SimdKind::I32 | SimdKind::K64) && chunk == 0 && crate::cpu::have_avx2() {
+        if !<V::H as Hooks>::COUNTED && matches!(<V::T as Elem>::SIMD, SimdKind::I32 | SimdKind::K64 | SimdKind::K32) && chunk == 0 && crate::cpu::have_avx2() {
             // SAFETY: AVX2 was detected; the views hold n and cap elements.
             return unsafe { crate::simd::x86::split2_avx2::<V>(a, buf, n, cap, vk, t1, t2, t3, xm, c0_lt, c0_ge, n_ge, known) };
         }
@@ -133,7 +133,7 @@ fn split2<V: Arr>(
 fn partition2<V: Arr>(src: V, m: usize, dst: V, o0: usize, o1: usize, end1: usize, chunk: i32, t: <V::T as Elem>::Key) {
     #[cfg(all(target_arch = "x86_64", not(brainsort_no_simd)))]
     {
-        if !<V::H as Hooks>::COUNTED && matches!(<V::T as Elem>::SIMD, SimdKind::I32 | SimdKind::K64) && chunk == 0 && crate::cpu::have_avx2() {
+        if !<V::H as Hooks>::COUNTED && matches!(<V::T as Elem>::SIMD, SimdKind::I32 | SimdKind::K64 | SimdKind::K32) && chunk == 0 && crate::cpu::have_avx2() {
             // SAFETY: AVX2 was detected; the ranges are inside the views.
             unsafe { crate::simd::x86::partition2_avx2::<V::T>(src.data() as *const V::T, m, dst.data(), o0, o1, end1, t) };
             return;

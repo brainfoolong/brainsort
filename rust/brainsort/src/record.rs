@@ -12,8 +12,8 @@
 //!
 //! Several fixed keys are packed into one radix value (a `(i32, i32)` is one
 //! 64-bit key), so composite keys of integers stay on the fast paths. A
-//! plain slice of 64-bit keys (`i64`, `u64`, `f64`, a pointer) needs no
-//! index: the keys themselves are sorted as [`Key64`] and written back.
+//! plain slice of keys (`i32`, `i64`, `f64`, a pointer) needs no index: the
+//! keys themselves are sorted as [`Key32`] or [`Key64`] and written back.
 use crate::key::{Key, Leaf, PartSink, SlotTree};
 use crate::view::{Elem, STR_CHUNK_BYTES, SimdKind, str_chunk_bytes, str_chunk_ends, str_chunk_key, str_chunk_key_desc, str_compare_from, str_examined};
 
@@ -54,6 +54,7 @@ pub struct Rec64 {
 }
 /// The key alone, for a slice whose elements are 64-bit keys that invert
 /// from their radix form: half the bytes of a [`Rec64`], four per vector.
+/// See [`KeyElem`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Key64 {
@@ -70,6 +71,66 @@ impl Key64 {
     #[inline(always)]
     pub fn radix(self) -> u64 {
         (self.key as u64) ^ 0x8000_0000_0000_0000
+    }
+}
+/// The key alone, for a slice whose elements are keys of up to 32 bits
+/// that invert from their radix form: half the bytes of a [`Rec32`], eight
+/// per vector. See [`KeyElem`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Key32 {
+    /// The signed form of the radix key.
+    pub key: i32,
+}
+impl Key32 {
+    /// The element of a radix key.
+    #[inline(always)]
+    pub fn from_radix(r: u64) -> Self {
+        Key32 { key: (r as u32 ^ 0x8000_0000) as i32 }
+    }
+    /// The radix key.
+    #[inline(always)]
+    pub fn radix(self) -> u64 {
+        ((self.key as u32) ^ 0x8000_0000) as u64
+    }
+}
+/// A keys-only element: the radix form of a key without an index, sorted
+/// as it is and written back. Its signed form is negative exactly for the
+/// keys below the radix midpoint, which is where the zeros of a float sit.
+pub trait KeyElem: Elem {
+    /// The element of a radix key.
+    fn from_radix(r: u64) -> Self;
+    /// The radix key.
+    fn radix(self) -> u64;
+    /// The signed form is negative.
+    fn is_negative(self) -> bool;
+}
+impl KeyElem for Key64 {
+    #[inline(always)]
+    fn from_radix(r: u64) -> Self {
+        Key64::from_radix(r)
+    }
+    #[inline(always)]
+    fn radix(self) -> u64 {
+        Key64::radix(self)
+    }
+    #[inline(always)]
+    fn is_negative(self) -> bool {
+        self.key < 0
+    }
+}
+impl KeyElem for Key32 {
+    #[inline(always)]
+    fn from_radix(r: u64) -> Self {
+        Key32::from_radix(r)
+    }
+    #[inline(always)]
+    fn radix(self) -> u64 {
+        Key32::radix(self)
+    }
+    #[inline(always)]
+    fn is_negative(self) -> bool {
+        self.key < 0
     }
 }
 impl Elem for Rec32 {
@@ -116,6 +177,31 @@ impl Elem for Key64 {
     #[inline(always)]
     fn radix_key(a: Self, _chunk: i32) -> u64 {
         a.radix()
+    }
+    #[inline(always)]
+    fn chunk_ends(_a: Self, _chunk: i32) -> bool {
+        true
+    }
+}
+impl Elem for Key32 {
+    type Key = u32;
+    const CHUNKED: bool = false;
+    const SIMD: SimdKind = SimdKind::K32;
+    #[inline(always)]
+    fn less(a: Self, b: Self) -> bool {
+        a.key < b.key
+    }
+    #[inline(always)]
+    fn compare(a: Self, b: Self) -> i32 {
+        (a.key > b.key) as i32 - (a.key < b.key) as i32
+    }
+    #[inline(always)]
+    fn compare_from(a: Self, b: Self, _chunk: i32) -> i32 {
+        Self::compare(a, b)
+    }
+    #[inline(always)]
+    fn radix_key(a: Self, _chunk: i32) -> u32 {
+        (a.key as u32) ^ 0x8000_0000
     }
     #[inline(always)]
     fn chunk_ends(_a: Self, _chunk: i32) -> bool {
@@ -209,11 +295,6 @@ impl Record for Rec64 {
     fn set_index(&mut self, i: u32) {
         self.idx = i;
     }
-}
-/// The radix key of a sorted 32-bit record, for the write-back of self-keyed elements.
-#[inline(always)]
-pub fn key_of32(r: &Rec32) -> u64 {
-    ((r.key as u32) ^ 0x8000_0000) as u64
 }
 /// The 64-bit radix value of a fixed key of up to 64 bits.
 #[inline(always)]
@@ -516,4 +597,4 @@ unsafe impl<const D: bool> Send for StrRec<D> {}
 // SAFETY: as above.
 unsafe impl<const D: bool> Sync for StrRec<D> {}
 
-const _: () = assert!(core::mem::size_of::<Rec32>() == 8 && core::mem::size_of::<Rec64>() == 16 && core::mem::size_of::<Key64>() == 8);
+const _: () = assert!(core::mem::size_of::<Rec32>() == 8 && core::mem::size_of::<Rec64>() == 16 && core::mem::size_of::<Key64>() == 8 && core::mem::size_of::<Key32>() == 4);

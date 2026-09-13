@@ -49,11 +49,10 @@
 //! the elements are permuted once. Keys of up to 32 bits become 8-byte
 //! records, up to 64 bits 16-byte records, a string a 16-byte
 //! pointer-and-length record, anything else a composite record sorted
-//! chunk by chunk. A plain slice of 64-bit numbers or pointers needs no
-//! index: the keys themselves are sorted, 8 bytes per element, and written
-//! back (the two zeros of an `f64` share a key and are put back by their
-//! rank among the zeros); plain 32-bit numbers are written back from their
-//! records.
+//! chunk by chunk. A plain slice of numbers or pointers needs no index:
+//! the keys themselves are sorted, 4 or 8 bytes per element, and written
+//! back (the two zeros of an `f32` or `f64` share a key and are put back by
+//! their rank among the zeros).
 //!
 //! # Floating point
 //!
@@ -230,6 +229,6 @@ pub mod internals {
     pub use crate::cpu::{cache_sizes, have_avx2, have_bmi2};
     pub use crate::infer::sort_by_inferred_impl;
     pub use crate::memory::DefaultAlloc;
-    pub use crate::record::{CompRec, Key64, Rec32, Rec64, Record, StrRec};
+    pub use crate::record::{CompRec, Key32, Key64, KeyElem, Rec32, Rec64, Record, StrRec};
     pub use crate::view::*;
 }
