@@ -501,6 +501,9 @@ pub unsafe fn split_forward_avx2<V: Arr>(a: V, buf: V, n: usize, cap: usize, piv
     unsafe {
         let vp = pivot_vec_key::<V::T>(<V::T as Elem>::radix_key(pivot, 0).to_u64());
         let vk0 = key0_vec::<V::T>(&*src);
+        // The reference key of the mask, read before the loop: the first
+        // store compacts over a[0].
+        let k0 = <V::T as Elem>::radix_key(*src, 0);
         let mut vmask = _mm256_setzero_si256();
         let (mut w, mut b, mut i) = (0usize, 0usize, 0usize);
         while i + v_per <= n && b + v_per <= cap {
@@ -516,7 +519,6 @@ pub unsafe fn split_forward_avx2<V: Arr>(a: V, buf: V, n: usize, cap: usize, piv
         let mut m = K::<V>::from_u64(fold_mask::<V::T>(vmask));
         // Scalar rest: same predicate on the keys, same stretch logic.
         let pk = <V::T as Elem>::radix_key(pivot, 0);
-        let k0 = <V::T as Elem>::radix_key(*src, 0);
         while i < n {
             let end = n.min(i + (cap - b));
             if end == i {
@@ -533,6 +535,19 @@ pub unsafe fn split_forward_avx2<V: Arr>(a: V, buf: V, n: usize, cap: usize, piv
                 b += g;
                 i += 1;
             }
+        }
+        // The buffer is full: the rest still fits while it is kept, as in
+        // the scalar split, which overflows only on a buffered element.
+        while i < n {
+            let e = *src.add(i);
+            let k = <V::T as Elem>::radix_key(e, 0);
+            if k >= pk {
+                break;
+            }
+            m = m | (k ^ k0);
+            *pa.add(w) = e;
+            w += 1;
+            i += 1;
         }
         if let Some(mask) = mask {
             *mask |= m.to_u64();
@@ -599,6 +614,9 @@ pub unsafe fn split2_avx2<V: Arr>(
         let e2 = pivot_vec_key::<V::T>(vk[2].to_u64());
         let e3 = pivot_vec_key::<V::T>(vk[3].to_u64());
         let vk0 = key0_vec::<V::T>(&*src);
+        // The reference key of the mask, read before the loop: the first
+        // store compacts over a[0].
+        let k0 = <V::T as Elem>::radix_key(*src, 0);
         let (mut vmask, mut junk, mut vbad) = (_mm256_setzero_si256(), _mm256_setzero_si256(), _mm256_setzero_si256());
         let (mut w, mut b, mut i, mut c1, mut c3) = (0usize, 0usize, 0usize, 0usize, 0usize);
         while i + v_per <= n && b + v_per <= cap {
@@ -618,7 +636,6 @@ pub unsafe fn split2_avx2<V: Arr>(
         }
         let mut m = K::<V>::from_u64(fold_mask::<V::T>(vmask));
         let mut unknown = fold_mask::<V::T>(vbad) != 0;
-        let k0 = <V::T as Elem>::radix_key(*src, 0);
         while i < n {
             let end = n.min(i + (cap - b));
             if end == i {
@@ -638,6 +655,22 @@ pub unsafe fn split2_avx2<V: Arr>(
                 b += g;
                 i += 1;
             }
+        }
+        // The buffer is full: the rest still fits while it is kept, as in
+        // the scalar split, which overflows only on a buffered element.
+        while i < n {
+            let e = *src.add(i);
+            let k = <V::T as Elem>::radix_key(e, 0);
+            if k >= t2 {
+                break;
+            }
+            m = m | (k ^ k0);
+            unknown |= (k != vk[0]) & (k != vk[1]) & (k != vk[2]) & (k != vk[3]);
+            c1 += (k < t1) as usize;
+            c3 += (k < t3) as usize;
+            *pa.add(w) = e;
+            w += 1;
+            i += 1;
         }
         *xm = m.to_u64();
         *known = !unknown;
@@ -898,3 +931,7 @@ pub unsafe fn prescan_avx2<const KIND: u8>(p: *const u8, n: usize) -> PrescanRes
     };
     r
 }
+
+#[cfg(test)]
+#[path = "x86_tests.rs"]
+mod tests;

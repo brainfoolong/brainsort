@@ -40,7 +40,10 @@
 // nothing throws except the projection or comparator itself. A projection
 // that throws during the first pass over the keys leaves the range
 // unchanged; one that throws later, or a comparator that throws, leaves
-// every element in the range in an unspecified order.
+// every element in the range in an unspecified order. A comparator that
+// is not a strict weak order gets an unspecified order, every element
+// exactly once, in every route of the library (the ranges that go to
+// std::stable_sort keep the standard library's requirement).
 //
 // Limits: at most 2^32 - 1 elements per call (larger ranges go to
 // std::stable_sort with the same order); strings of 2^32 bytes or more
@@ -662,7 +665,10 @@ inline void permute_indices(T* p, uint32_t* idx, size_t n, bool sparse) {
             for (;;) {
                 const size_t k = idx[j];
                 idx[j] = static_cast<uint32_t>(j);
-                if (k == i) { p[j] = tmp; break; }
+                // k == j cannot happen on a permutation (a fixed point is
+                // never in a cycle); the check makes the walk end on any
+                // index array, instead of spinning, should one ever not be.
+                if (k == i || k == j) { p[j] = tmp; break; }
                 p[j] = p[k];
                 j    = k;
             }

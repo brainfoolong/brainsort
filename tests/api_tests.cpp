@@ -1056,6 +1056,241 @@ void test_random_shapes() {
 
 }  // namespace
 
+// ---- the vector kernels against their scalar twins --------------------------------
+// Each AVX2 kernel on the same inputs as the scalar code it replaces, in
+// buffers of exactly the size the kernel is told about, so an overread or
+// overwrite past a tail lands outside the allocation and the sanitizer
+// jobs see it. Every tail length is covered (n runs over every remainder
+// modulo the vector width). The scout may stop early on a rule that is
+// rigorous but tested at other positions than the scalar loop tests it:
+// below the first commit block the results are compared exactly, above it
+// an early stop is checked against the rule on the kernel's prefixes.
+#ifdef BRAINSORT_X86_64
+namespace simd_twins {
+using namespace brainsort::detail;
+using namespace brainsort::detail::brain_detail;
+using namespace brainsort::detail::radix_detail;
+template <class T> using V = View<T, DefaultAlloc>;
+
+struct Rng {
+    uint64_t s;
+    uint64_t next() {
+        s += 0x9E3779B97F4A7C15ull;
+        uint64_t z = s;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        return z ^ (z >> 31);
+    }
+    uint64_t below(uint64_t n) { return next() % n; }
+};
+template <class T> bool same_bytes(const T* a, const T* b, size_t n) { return n == 0 || std::memcmp(a, b, n * sizeof(T)) == 0; }
+template <class T> T make(Rng& rng, bool small) {
+    const uint64_t k = small ? rng.below(4) * 1000003 : rng.next();
+    T e{};
+    if constexpr (sizeof(e.key) == 8) e.key = static_cast<int64_t>(k);
+    else e.key = static_cast<int32_t>(k);
+    if constexpr (requires { e.idx; }) e.idx = static_cast<uint32_t>(rng.next());
+    return e;
+}
+template <class T> std::vector<T> elems(Rng& rng, size_t n, bool small) {
+    std::vector<T> v;
+    for (size_t i = 0; i < n; ++i) v.push_back(make<T>(rng, small));
+    return v;
+}
+std::vector<size_t> sizes() {
+    std::vector<size_t> s;
+    for (size_t n = 1; n <= 200; ++n) s.push_back(n);
+    for (size_t n : {1023, 1024, 1025, 1500, 2049, 4096, 4111}) s.push_back(n);
+    return s;
+}
+template <class T> typename brainsort::elem_traits<T>::key_type key_of(T e) { return brainsort::elem_traits<T>::radix_key(e, 0); }
+
+// What a split leaves on overflow: a prefix of the input stably partitioned
+// (kept, then buffered, each in input order) and the rest untouched; the
+// kernel and the scalar loop stop at different prefixes.
+template <class T, class Ge> bool partial_partition(const std::vector<T>& in, const std::vector<T>& out, Ge ge) {
+    const size_t n = in.size();
+    size_t l = 0;
+    while (l < n && same_bytes(&out[n - 1 - l], &in[n - 1 - l], 1)) ++l;
+    const size_t s = n - l;
+    std::vector<T> expect;
+    for (size_t i = 0; i < s; ++i) if (!ge(in[i])) expect.push_back(in[i]);
+    for (size_t i = 0; i < s; ++i) if (ge(in[i])) expect.push_back(in[i]);
+    return same_bytes(out.data(), expect.data(), s);
+}
+
+template <class T> void check_reverse() {
+    Rng rng{1};
+    for (size_t n : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 1000, 1001, 4097}) {
+        std::vector<T> v(n), w;
+        for (auto& e : v) { const uint64_t x = rng.next(); std::memcpy(&e, &x, sizeof(T) < 8 ? sizeof(T) : 8); }
+        w = v;
+        reverse_avx2<T>(v.data(), n);
+        std::reverse(w.begin(), w.end());
+        CHECK(same_bytes(v.data(), w.data(), n), "reverse_avx2 of " + std::to_string(n) + " elements of " + std::to_string(sizeof(T)) + " bytes");
+    }
+}
+template <class Cnt> void check_prefix() {
+    Rng rng{2};
+    for (size_t n : {16, 32, 256, 1024, 8192}) {
+        std::vector<Cnt> a(n), b;
+        for (auto& c : a) c = static_cast<Cnt>(rng.next());
+        b = a;
+        prefix_avx2(a.data(), n);
+        prefix_scalar(b.data(), n);
+        CHECK(a == b, "prefix_avx2 of " + std::to_string(n) + " counts of " + std::to_string(sizeof(Cnt)) + " bytes");
+    }
+}
+
+template <class T> void check_split_forward() {
+    Rng rng{4};
+    for (size_t n : sizes())
+        for (bool small : {false, true})
+            for (size_t cap : {n / 4, n / 2 + 1, n}) {
+                const std::vector<T> v = elems<T>(rng, n, small);
+                const T pivot = v[rng.below(n)];
+                std::vector<T> a = v, b = v, ba(cap), bb(cap);
+                size_t ga = 0, gb = 0;
+                uint64_t ma = 0, mb = 0;
+                const bool ra = split_forward_avx2<V<T>>(V<T>(a.data(), n), V<T>(ba.data(), cap), n, cap, pivot, ga, &ma);
+                const bool rb = split_forward_scalar<V<T>>(V<T>(b.data(), n), V<T>(bb.data(), cap), n, cap, key_of(pivot), 0, gb, &mb);
+                const std::string what = "split_forward of " + std::to_string(n) + " elements of " + std::to_string(sizeof(T)) + " bytes, cap " + std::to_string(cap);
+                CHECK(ra == rb, what + ": result");
+                if (ra && rb) {
+                    CHECK(ma == mb && ga == gb, what + ": mask and n_ge");
+                    CHECK(same_bytes(a.data(), b.data(), n - ga), what + ": kept side");
+                    CHECK(same_bytes(ba.data(), bb.data(), ga), what + ": buffered side");
+                } else {
+                    const auto pk = key_of(pivot);
+                    CHECK(partial_partition(v, a, [&](T e) { return key_of(e) >= pk; }), what + ": the partial partition the kernel left");
+                    CHECK(partial_partition(v, b, [&](T e) { return key_of(e) >= pk; }), what + ": the partial partition the scalar loop left");
+                }
+            }
+}
+template <class T> bool sampled(const std::vector<T>& v, typename brainsort::elem_traits<T>::key_type* vk) {
+    std::vector<typename brainsort::elem_traits<T>::key_type> keys;
+    for (T e : v) keys.push_back(key_of(e));
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    if (keys.size() < 4) return false;
+    for (int i = 0; i < 4; ++i) vk[i] = keys[static_cast<size_t>(i)];
+    return true;
+}
+template <class T> void check_split2() {
+    using K = typename brainsort::elem_traits<T>::key_type;
+    Rng rng{5};
+    for (size_t n : sizes())
+        for (bool unknown : {false, true})
+            for (size_t cap : {n / 4, n / 2 + 1, n}) {
+                std::vector<T> v = elems<T>(rng, n, true);
+                if (unknown) v[rng.below(n)] = make<T>(rng, false);
+                K vk[4];
+                if (!sampled(v, vk)) continue;
+                const K t1 = vk[1], t2 = vk[2], t3 = vk[3];
+                std::vector<T> a = v, b = v, ba(cap), bb(cap);
+                uint64_t xa = 0, xb = 0;
+                size_t la = 0, lb = 0, ha = 0, hb = 0, ga = 0, gb = 0;
+                bool ka = true, kb = true;
+                const bool ra = split2_avx2<V<T>>(V<T>(a.data(), n), V<T>(ba.data(), cap), n, cap, vk, t1, t2, t3, xa, la, ha, ga, ka);
+                const bool rb = split2_scalar<V<T>, K>(V<T>(b.data(), n), V<T>(bb.data(), cap), n, cap, 0, vk, t1, t2, t3, xb, lb, hb, gb, kb);
+                const std::string what = "split2 of " + std::to_string(n) + " elements of " + std::to_string(sizeof(T)) + " bytes, cap " + std::to_string(cap);
+                CHECK(ra == rb, what + ": result");
+                if (ra && rb) {
+                    CHECK(xa == xb && ka == kb, what + ": mask and known");
+                    CHECK(la == lb && ha == hb && ga == gb, what + ": counts");
+                    CHECK(same_bytes(a.data(), b.data(), n - ga), what + ": kept side");
+                    CHECK(same_bytes(ba.data(), bb.data(), ga), what + ": buffered side");
+                } else {
+                    CHECK(partial_partition(v, a, [&](T e) { return key_of(e) >= t2; }), what + ": the partial partition the kernel left");
+                    CHECK(partial_partition(v, b, [&](T e) { return key_of(e) >= t2; }), what + ": the partial partition the scalar loop left");
+                }
+            }
+}
+template <class T> void check_partition2() {
+    using K = typename brainsort::elem_traits<T>::key_type;
+    Rng rng{6};
+    for (size_t m : sizes()) {
+        std::vector<T> v = elems<T>(rng, m, true);
+        K vk[4];
+        if (!sampled(v, vk)) continue;
+        for (K t : {vk[1], vk[2]}) {
+            size_t lower = 0;
+            for (T e : v) lower += key_of(e) < t;
+            const size_t o0 = rng.below(8), o1 = o0 + lower, end1 = o0 + m;
+            std::vector<T> da(end1), db(end1);
+            partition2_avx2<T>(v.data(), m, da.data(), o0, o1, end1, t);
+            partition2_scalar<V<T>, K>(V<T>(v.data(), m), m, V<T>(db.data(), end1), o0, o1, end1, 0, t);
+            CHECK(same_bytes(da.data() + o0, db.data() + o0, m), "partition2 of " + std::to_string(m) + " elements of " + std::to_string(sizeof(T)) + " bytes at " + std::to_string(o0));
+        }
+    }
+}
+
+bool same_scout(const ScoutResult& a, const ScoutResult& b) {
+    if (a.mask != b.mask || a.has_mask != b.has_mask || a.committed != b.committed) return false;
+    if (a.descents != b.descents || a.ascents != b.ascents) return false;
+    if (a.runs != b.runs || a.tracking != b.tracking || a.cur_dir != b.cur_dir) return false;
+    if (a.tracking)
+        for (size_t j = 0; j <= a.runs; ++j)
+            if (a.bound[j] != b.bound[j] || (j < a.runs && a.dir[j] != b.dir[j])) return false;
+    return true;
+}
+// Whether the commit rule held on a prefix the kernels test it on (one
+// past a whole number of vectors after the first element, so 1 modulo 8,
+// from the first commit block on): the only way a kernel may stop early.
+template <class T> bool could_commit(std::vector<T>& v) {
+    for (size_t i = kCommitBlock + 1; i <= v.size(); i += 8) {
+        const ScoutResult r = scout_scalar(V<T>(v.data(), i), i, 0);
+        if (r.committed || commit_now(r, i)) return true;
+    }
+    return false;
+}
+template <class T> void check_scout() {
+    Rng rng{7};
+    for (size_t n : sizes())
+        for (int shape = 0; shape < 4; ++shape) {
+            std::vector<T> v = elems<T>(rng, n, shape == 1);
+            if (shape >= 2) std::sort(v.begin(), v.end(), [](T x, T y) { return key_of(x) < key_of(y); });
+            if (shape == 2)
+                for (size_t k = 0; k < n / 64 + 1; ++k) std::swap(v[rng.below(n)], v[rng.below(n)]);
+            if (shape == 3) std::reverse(v.begin() + static_cast<std::ptrdiff_t>(rng.below(n)), v.end());
+            const std::string what = "scout of " + std::to_string(n) + " elements of " + std::to_string(sizeof(T)) + " bytes, shape " + std::to_string(shape);
+            ScoutResult a = scout_avx2<T>(v.data(), n);
+            a.has_mask = !a.committed;   // as the caller sets it
+            const ScoutResult b = scout_scalar(V<T>(v.data(), n), n, 0);
+            if (!a.committed && !b.committed) CHECK(same_scout(a, b), what);
+            else if (a.committed) CHECK(could_commit(v), what + ": the kernel committed where the rule never held");
+        }
+}
+}  // namespace simd_twins
+
+void test_simd_kernels() {
+    using namespace simd_twins;
+    if (!brainsort::detail::have_avx2()) { std::printf("simd kernels: no AVX2, skipped\n"); return; }
+    check_reverse<uint32_t>();
+    check_reverse<uint64_t>();
+    check_reverse<Rec64>();
+    check_prefix<uint16_t>();
+    check_prefix<uint32_t>();
+    check_split_forward<Rec32>();
+    check_split_forward<Rec64>();
+    check_split_forward<Key64>();
+    check_split_forward<Key32>();
+    check_split2<Rec32>();
+    check_split2<Key64>();
+    check_split2<Key32>();
+    check_partition2<Rec32>();
+    check_partition2<Key64>();
+    check_partition2<Key32>();
+    check_scout<Rec32>();
+    check_scout<Rec64>();
+    check_scout<Key64>();
+    check_scout<Key32>();
+    std::printf("simd kernels: every AVX2 kernel agrees with its scalar twin\n");
+}
+#else
+void test_simd_kernels() {}
+#endif
+
 int main(int argc, char** argv) {
     const bool quick = argc > 1 && std::string(argv[1]) == "--quick";
     const size_t big = quick ? 10000 : 100000, mid = quick ? 4096 : 10000;
@@ -1127,6 +1362,7 @@ int main(int argc, char** argv) {
     test_inference(big);
     test_threads();
     test_random_shapes();
+    test_simd_kernels();
     if (!quick) test_large();
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

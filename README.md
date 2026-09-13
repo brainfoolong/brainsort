@@ -296,6 +296,10 @@ A comparator that is not expressible as a key goes to `std::stable_sort`.
   call), every element is still in the range, in an unspecified order.
 - **The comparator throws.** The exception propagates and every element is
   still in the range, in an unspecified order, as with `std::stable_sort`.
+- **The comparator is not a strict weak order.** An unspecified order,
+  every element exactly once: every merge and partition of the library is
+  counted or checked, so no answer moves a cursor past a run. The ranges
+  that go to `std::stable_sort` keep the standard library's requirement.
 - **Moves may throw.** Such element types are sorted by `std::stable_sort`.
 - **Limits.** At most 2^32 - 1 elements per call and strings shorter than
   2^32 bytes; beyond either the call goes to `std::stable_sort`. The block
@@ -310,7 +314,15 @@ order, stability and permutation; then containers, element kinds, the
 floating-point total order, allocation failure at every allocation point,
 throwing projections and comparators, the comparator overloads on every
 pattern, concurrent sorts, random shapes, and inputs large enough for the
-scatter beyond the cache. The benchmark suite, [src/test.cpp](src/test.cpp), adds every
+scatter beyond the cache. The fuzz body, [tests/fuzz_sort.cpp](tests/fuzz_sort.cpp),
+adds comparators that are not orders (random per call, a hash of the pair)
+and orders that no byte window of the element expresses, on elements sorted
+in place and through indices, and a size byte that repeats an input up to
+64 times so the routes that start at thousands of elements are reached. The
+suite also runs every AVX2 kernel against its scalar twin in buffers of
+exactly the size the kernel is told about, over every tail length, so an
+overread past a tail is outside the allocation for the sanitizers to see
+([docs/decisions/0015.md](docs/decisions/0015.md)). The benchmark suite, [src/test.cpp](src/test.cpp), adds every
 algorithm on every key type at 42 sizes and 3 seeds, checks that the verifier
 rejects wrong output, and recomputes every row of the golden file
 [results/counts.csv](results/counts.csv).
@@ -318,7 +330,10 @@ rejects wrong output, and recomputes every row of the golden file
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push:
 GCC 13 and 14, Clang and Apple Clang; Linux x86-64, Linux 32-bit, Linux
 ARM64, macOS ARM64, Windows MSVC and MinGW; AddressSanitizer,
-UndefinedBehaviorSanitizer and ThreadSanitizer; three minutes of libFuzzer.
+UndefinedBehaviorSanitizer and ThreadSanitizer with the standard library's
+own assertions on; three minutes of libFuzzer, and every night thirty
+minutes of both fuzzers with the corpus kept
+([fuzz-nightly.yml](.github/workflows/fuzz-nightly.yml)).
 Each platform job then benchmarks the binaries it tested. The Rust port
 runs [rust.yml](.github/workflows/rust.yml) as part of the same run:
 rustfmt, clippy, docs, the minimum Rust version, a `no_std` target, the

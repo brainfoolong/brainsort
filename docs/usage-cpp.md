@@ -141,7 +141,10 @@ numbers are sorted as bare keys, without an index, and written back.
   `std::stable_sort`. A projection that throws during the first pass over
   the keys leaves the range unchanged; one that throws later, or a
   comparator that throws, leaves every element in the range in an
-  unspecified order. Nothing else throws.
+  unspecified order. Nothing else throws. A comparator that is not a
+  strict weak order gets an unspecified order, every element exactly once,
+  in every route of the library; the ranges that go to `std::stable_sort`
+  keep the standard library's requirement.
 - **Limits.** At most 2^32 - 1 elements per call and strings shorter than
   2^32 bytes; beyond either the call goes to `std::stable_sort`.
 - **Threads.** Concurrent sorts are fine; the block cache is the only

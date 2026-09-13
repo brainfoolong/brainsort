@@ -1,0 +1,85 @@
+name: Fuzz nightly
+
+# The two libFuzzer targets for half an hour each, every night and on
+# request, with the corpus kept between runs so each night starts where the
+# last one stopped. The push workflows run the same targets for three
+# minutes; this is where the deeper inputs come from.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpp:
+    name: C++ libFuzzer (Clang, ASan + UBSan, 30 minutes)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz-corpus/cpp
+          key: fuzz-corpus-cpp-${{ github.run_id }}
+          restore-keys: fuzz-corpus-cpp-
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++
+          -DBRAINSORT_BUILD_FUZZERS=ON -DBRAINSORT_BUILD_TESTS=OFF -DBRAINSORT_BUILD_BENCHMARK=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Fuzz for thirty minutes
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          mkdir -p fuzz-corpus/cpp
+          ./build/brainsort_fuzz fuzz-corpus/cpp -max_total_time=1800 -max_len=8192 -print_final_stats=1
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-fuzz-crash
+          path: |
+            crash-*
+            timeout-*
+            leak-*
+          if-no-files-found: ignore
+
+  rust:
+    name: Rust libFuzzer (30 minutes)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: rust/brainsort
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/brainsort/fuzz
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: rust/brainsort/fuzz/corpus/sort
+          key: fuzz-corpus-rust-${{ github.run_id }}
+          restore-keys: fuzz-corpus-rust-
+      # The target is named: the prebuilt cargo-fuzz is a musl binary and
+      # would otherwise build for musl, where the sanitizer cannot link.
+      - name: Fuzz for thirty minutes
+        run: cargo fuzz run sort --target x86_64-unknown-linux-gnu -- -max_total_time=1800 -max_len=8192 -print_final_stats=1
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-fuzz-crash
+          path: rust/brainsort/fuzz/artifacts
+          if-no-files-found: ignore

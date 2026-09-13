@@ -47,7 +47,10 @@
 // nothing throws except the projection or comparator itself. A projection
 // that throws during the first pass over the keys leaves the range
 // unchanged; one that throws later, or a comparator that throws, leaves
-// every element in the range in an unspecified order.
+// every element in the range in an unspecified order. A comparator that
+// is not a strict weak order gets an unspecified order, every element
+// exactly once, in every route of the library (the ranges that go to
+// std::stable_sort keep the standard library's requirement).
 //
 // Limits: at most 2^32 - 1 elements per call (larger ranges go to
 // std::stable_sort with the same order); strings of 2^32 bytes or more
@@ -2102,6 +2105,15 @@ inline bool split_forward_scalar(A a, A buf, size_t n, size_t cap, uint64_t pk, 
                 b += g;
             }
         }
+        // The buffer is full: the rest still fits while it is kept, so the
+        // split overflows where the counted loop does, on a buffered element.
+        for (; i < n; ++i) {
+            const T        e = src[i];
+            const uint64_t k = KT::radix_key(e, chunk);
+            if (k >= pk) break;
+            m |= k ^ k0;
+            pa[w++] = e;
+        }
     }
     if (mask) *mask |= m;
     if (i < n) {   // overflow: fold the buffer back into the gap a[w, i)
@@ -2144,6 +2156,16 @@ inline bool split_backward_scalar(A a, A buf, size_t n, size_t cap, uint64_t pk,
                 w -= g;
                 b -= 1 - g;
             }
+        }
+        // The buffer is full: the rest still fits while it is kept, as in
+        // the counted loop.
+        while (i > 0) {
+            const T        e = src[i - 1];
+            const uint64_t k = KT::radix_key(e, chunk);
+            if (k < pk) break;
+            m |= k ^ k0;
+            pa[--w] = e;
+            --i;
         }
     }
     if (mask) *mask |= m;
@@ -2271,6 +2293,9 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
     const T* src = a.data();
     const __m256i vp  = pivot_vec<T>(pivot);
     const __m256i vk0 = key0_vec<T>(src[0]);
+    // The reference key of the mask, read before the loop: the first store
+    // compacts over a[0].
+    const uint64_t k0 = KT::radix_key(src[0], 0);
     __m256i vmask = _mm256_setzero_si256();
     size_t w = 0, b = 0, i = 0;
     for (; i + V <= n && b + V <= cap; i += V) {
@@ -2285,7 +2310,6 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
     uint64_t m = fold_mask<T>(vmask);
     // Scalar rest: same predicate on the keys, same stretch logic.
     const uint64_t pk = KT::radix_key(pivot, 0);
-    const uint64_t k0 = KT::radix_key(src[0], 0);
     while (i < n) {
         const size_t end = std::min(n, i + (cap - b));
         if (end == i) break;
@@ -2299,6 +2323,15 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
             w += 1 - g;
             b += g;
         }
+    }
+    // The buffer is full: the rest still fits while it is kept, as in the
+    // scalar split, which overflows only on a buffered element.
+    for (; i < n; ++i) {
+        const T        e = src[i];
+        const uint64_t k = KT::radix_key(e, 0);
+        if (k >= pk) break;
+        m |= k ^ k0;
+        pa[w++] = e;
     }
     if (mask) *mask |= m;
     if (i < n) {
@@ -3083,6 +3116,9 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
     const __m256i vp1 = pivot_vec_key<T>(t1), vp2 = pivot_vec_key<T>(t2), vp3 = pivot_vec_key<T>(t3);
     const __m256i e0 = pivot_vec_key<T>(vk[0]), e1 = pivot_vec_key<T>(vk[1]), e2 = pivot_vec_key<T>(vk[2]), e3 = pivot_vec_key<T>(vk[3]);
     const __m256i vk0 = key0_vec<T>(src[0]);
+    // The reference key of the mask, read before the loop: the first store
+    // compacts over a[0].
+    const K k0 = KT::radix_key(src[0], 0);
     __m256i vmask = _mm256_setzero_si256(), junk = _mm256_setzero_si256(), vbad = _mm256_setzero_si256();
     size_t w = 0, b = 0, i = 0, c1 = 0, c3 = 0;
     for (; i + V <= n && b + V <= cap; i += V) {
@@ -3102,7 +3138,6 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
     }
     K    m       = static_cast<K>(fold_mask<T>(vmask));
     bool unknown = fold_mask<T>(vbad) != 0;
-    const K k0 = KT::radix_key(src[0], 0);
     while (i < n) {
         const size_t end = std::min(n, i + (cap - b));
         if (end == i) break;
@@ -3119,6 +3154,18 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
             w += 1 - g;
             b += g;
         }
+    }
+    // The buffer is full: the rest still fits while it is kept, as in the
+    // scalar split, which overflows only on a buffered element.
+    for (; i < n; ++i) {
+        const T e = src[i];
+        const K k = KT::radix_key(e, 0);
+        if (k >= t2) break;
+        m |= k ^ k0;
+        unknown |= (k != vk[0]) & (k != vk[1]) & (k != vk[2]) & (k != vk[3]);
+        c1 += k < t1;
+        c3 += k < t3;
+        pa[w++] = e;
     }
     xm    = m;
     known = !unknown;
@@ -3459,7 +3506,10 @@ inline void brainsort_view(A a) { brainsort_impl<0>(a); }
 // Trivially copyable elements only: the buffer holds plain copies, so if
 // the comparator throws, every element is still in the range (in the
 // buffer's order or the array's), which is the guarantee std::stable_sort
-// gives. Elements larger than kElementRouteMax bytes are sorted through an
+// gives. A comparator that is not a strict weak order gets an unspecified
+// order, every element exactly once: every merge and partition is counted
+// or checked, so no answer can move a cursor past a run or take an element
+// twice. Elements larger than kElementRouteMax bytes are sorted through an
 // index array (brainsort.hpp), so the passes move 4-byte indices and each
 // element moves once, at the end.
 
@@ -3516,10 +3566,35 @@ inline void sort4(T* a, Comp& comp) {
     a[3] = mx;
 }
 
+// Merge [l,le) and [r,re) into out with a bounds check at every step: the
+// slow merge for a comparator that is not a strict weak order, which the
+// merges below detect after the fact. A permutation whatever it answers.
+template <class T, class Comp>
+inline void merge_guarded(const T* l, const T* le, const T* r, const T* re, T* out, Comp& comp) {
+    while (l != le && r != re) {
+        const bool t = comp(*r, *l);
+        *out++ = *(t ? r : l);
+        r += t;
+        l += !t;
+    }
+    while (l != le) *out++ = *l++;
+    while (r != re) *out++ = *r++;
+}
+
 // Merge the runs L[0,m) and R[0,m) into out[0,2m), from both ends, without
 // a bounds check: the front takes m steps and the back takes m, and no run
 // can go dry before a side's last step, because each has exactly m
 // elements. The two chains overlap in the pipeline.
+//
+// That holds for a strict weak order: the front's m elements are the m
+// smallest and the back's the m largest, so the two ends take disjoint
+// elements from each run. A comparator that is not one can make them
+// overlap (an element taken by both ends, another by neither), and then
+// the cursors do not meet. The reads stay inside the runs either way (each
+// cursor moves at most m - 1 steps before its last read); the inputs are
+// intact, because out is a separate buffer; so the merge is redone with
+// bounds checks. One compare per merge for a comparator that keeps the
+// contract.
 template <size_t m, class T, class Comp>
 inline void merge_exact(const T* L, const T* R, T* out, Comp& comp) {
     const T* l  = L;
@@ -3536,6 +3611,7 @@ inline void merge_exact(const T* L, const T* R, T* out, Comp& comp) {
         r += t;  l += !t;
         le -= u; re -= !u;
     }
+    if (l != le) merge_guarded(L, L + m, R, R + m, out, comp);
 }
 
 // Stable sort of a[0,16) without a branch: four sorts of four, two merges
@@ -5511,7 +5587,10 @@ inline void permute_indices(T* p, uint32_t* idx, size_t n, bool sparse) {
             for (;;) {
                 const size_t k = idx[j];
                 idx[j] = static_cast<uint32_t>(j);
-                if (k == i) { p[j] = tmp; break; }
+                // k == j cannot happen on a permutation (a fixed point is
+                // never in a cycle); the check makes the walk end on any
+                // index array, instead of spinning, should one ever not be.
+                if (k == i || k == j) { p[j] = tmp; break; }
                 p[j] = p[k];
                 j    = k;
             }

@@ -83,7 +83,10 @@
 //!   moves, so the slice is unchanged if the panic happens during the
 //!   first pass over the keys; a panic on a later call (the nearly sorted
 //!   route compares elements again) leaves every element in the slice, in
-//!   an unspecified order. A comparator that panics likewise.
+//!   an unspecified order. A comparator that panics likewise. A comparator
+//!   that is not a total order gets an unspecified order, or the panic the
+//!   standard library's sort documents for it; every element stays in the
+//!   slice exactly once.
 //! - **Limits.** At most 2^32 - 1 elements per call and strings shorter
 //!   than 2^32 bytes; beyond either the call goes to the standard
 //!   library's stable sort. The block cache is the only shared state,

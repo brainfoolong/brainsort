@@ -6,6 +6,24 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- The split kernels (the median split and the partition sort, AVX2) read
+  the reference key of their varying-bits mask before the vector loop
+  compacts over the first element; the scalar tail had read it after,
+  which could set or miss bits of the mask that decides which radix
+  passes run (not reachable through the sort, whose split starts at a
+  thousand elements). The kernels and the timed scalar splits overflow
+  only on a buffered element, as the counted splits do, instead of on a
+  buffer that is exactly full with kept elements left: a spurious retry
+  less. Found by new unit tests that run every vector kernel against its
+  scalar twin on exactly sized buffers, which the AddressSanitizer job
+  now covers where Miri cannot.
+- Documented what a comparator that is not a total order gets from
+  `sort_by` and `sort_by_inferred`: an unspecified order, or the panic the
+  standard library's sort documents, with every element in the slice
+  exactly once. The fuzz body now feeds such comparators (random per call,
+  a hash of the pair) and orders no byte window of the element expresses,
+  on 16- and 32-byte elements, and repeats an input up to 64 times so the
+  routes that start at thousands of elements are fuzzed.
 - `sort` on a plain slice of keys of up to 32 bits (`i32`, `u32`, the 8-
   and 16-bit integers, `bool`, `char`, `f32`, any `Key` whose radix form
   inverts) sorts the keys themselves, 4 bytes per element instead of an

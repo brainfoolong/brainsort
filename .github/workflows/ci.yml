@@ -205,7 +205,7 @@ jobs:
           if-no-files-found: error
 
   sanitizers:
-    name: Clang ${{ matrix.name }}
+    name: Clang ${{ matrix.name }}, hardened stdlib
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -224,7 +224,7 @@ jobs:
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++
-          -DBRAINSORT_SANITIZE=${{ matrix.sanitize }} -DBRAINSORT_BUILD_BENCHMARK=OFF
+          -DBRAINSORT_SANITIZE=${{ matrix.sanitize }} -DBRAINSORT_HARDENED_STDLIB=ON -DBRAINSORT_BUILD_BENCHMARK=OFF
       - name: Build
         run: cmake --build build
       - name: Test

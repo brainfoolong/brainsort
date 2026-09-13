@@ -147,7 +147,9 @@ as bare keys, without an index, and written back.
   route compares elements again), or a comparator that panics, leaves
   every element in the slice, exactly once, in an unspecified order; the
   comparison sort of elements over 16 bytes runs on indices and moves
-  nothing before its last comparison.
+  nothing before its last comparison. A comparator that is not a total
+  order gets an unspecified order, or the panic the standard library's
+  sort documents for it; every element stays in the slice exactly once.
 - **Limits.** At most 2^32 - 1 elements per call and strings shorter than
   2^32 bytes; beyond either the call goes to the standard library's
   stable sort.

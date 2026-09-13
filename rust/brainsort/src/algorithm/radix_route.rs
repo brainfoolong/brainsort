@@ -245,6 +245,23 @@ pub fn split_forward_scalar<V: Arr>(a: V, buf: V, n: usize, cap: usize, pk: u64,
                 i += 1;
             }
         }
+        // The buffer is full: the rest still fits while it is kept, so
+        // the split overflows where the counted loop does, on a buffered
+        // element.
+        while i < n {
+            // SAFETY: i < n; w <= i.
+            unsafe {
+                let e = *src.add(i);
+                let k = <V::T as Elem>::radix_key(e, chunk);
+                if k >= pk {
+                    break;
+                }
+                m = m | (k ^ k0);
+                *pa.add(w) = e;
+            }
+            w += 1;
+            i += 1;
+        }
     }
     if let Some(mask) = mask {
         *mask |= m.to_u64();
@@ -303,6 +320,22 @@ pub fn split_backward_scalar<V: Arr>(a: V, buf: V, n: usize, cap: usize, pk: u64
                     b -= 1 - g;
                 }
             }
+        }
+        // The buffer is full: the rest still fits while it is kept, as in
+        // the counted loop.
+        while i > 0 {
+            // SAFETY: i - 1 < n; w - 1 >= i - 1.
+            unsafe {
+                let e = *src.add(i - 1);
+                let k = <V::T as Elem>::radix_key(e, chunk);
+                if k < pk {
+                    break;
+                }
+                m = m | (k ^ k0);
+                *pa.add(w - 1) = e;
+            }
+            w -= 1;
+            i -= 1;
         }
     }
     if let Some(mask) = mask {

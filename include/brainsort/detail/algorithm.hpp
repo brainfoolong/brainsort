@@ -981,6 +981,15 @@ inline bool split_forward_scalar(A a, A buf, size_t n, size_t cap, uint64_t pk, 
                 b += g;
             }
         }
+        // The buffer is full: the rest still fits while it is kept, so the
+        // split overflows where the counted loop does, on a buffered element.
+        for (; i < n; ++i) {
+            const T        e = src[i];
+            const uint64_t k = KT::radix_key(e, chunk);
+            if (k >= pk) break;
+            m |= k ^ k0;
+            pa[w++] = e;
+        }
     }
     if (mask) *mask |= m;
     if (i < n) {   // overflow: fold the buffer back into the gap a[w, i)
@@ -1023,6 +1032,16 @@ inline bool split_backward_scalar(A a, A buf, size_t n, size_t cap, uint64_t pk,
                 w -= g;
                 b -= 1 - g;
             }
+        }
+        // The buffer is full: the rest still fits while it is kept, as in
+        // the counted loop.
+        while (i > 0) {
+            const T        e = src[i - 1];
+            const uint64_t k = KT::radix_key(e, chunk);
+            if (k < pk) break;
+            m |= k ^ k0;
+            pa[--w] = e;
+            --i;
         }
     }
     if (mask) *mask |= m;
@@ -1150,6 +1169,9 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
     const T* src = a.data();
     const __m256i vp  = pivot_vec<T>(pivot);
     const __m256i vk0 = key0_vec<T>(src[0]);
+    // The reference key of the mask, read before the loop: the first store
+    // compacts over a[0].
+    const uint64_t k0 = KT::radix_key(src[0], 0);
     __m256i vmask = _mm256_setzero_si256();
     size_t w = 0, b = 0, i = 0;
     for (; i + V <= n && b + V <= cap; i += V) {
@@ -1164,7 +1186,6 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
     uint64_t m = fold_mask<T>(vmask);
     // Scalar rest: same predicate on the keys, same stretch logic.
     const uint64_t pk = KT::radix_key(pivot, 0);
-    const uint64_t k0 = KT::radix_key(src[0], 0);
     while (i < n) {
         const size_t end = std::min(n, i + (cap - b));
         if (end == i) break;
@@ -1178,6 +1199,15 @@ BRAINSORT_TARGET_AVX2 inline bool split_forward_avx2(A a, A buf, size_t n, size_
             w += 1 - g;
             b += g;
         }
+    }
+    // The buffer is full: the rest still fits while it is kept, as in the
+    // scalar split, which overflows only on a buffered element.
+    for (; i < n; ++i) {
+        const T        e = src[i];
+        const uint64_t k = KT::radix_key(e, 0);
+        if (k >= pk) break;
+        m |= k ^ k0;
+        pa[w++] = e;
     }
     if (mask) *mask |= m;
     if (i < n) {
@@ -1962,6 +1992,9 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
     const __m256i vp1 = pivot_vec_key<T>(t1), vp2 = pivot_vec_key<T>(t2), vp3 = pivot_vec_key<T>(t3);
     const __m256i e0 = pivot_vec_key<T>(vk[0]), e1 = pivot_vec_key<T>(vk[1]), e2 = pivot_vec_key<T>(vk[2]), e3 = pivot_vec_key<T>(vk[3]);
     const __m256i vk0 = key0_vec<T>(src[0]);
+    // The reference key of the mask, read before the loop: the first store
+    // compacts over a[0].
+    const K k0 = KT::radix_key(src[0], 0);
     __m256i vmask = _mm256_setzero_si256(), junk = _mm256_setzero_si256(), vbad = _mm256_setzero_si256();
     size_t w = 0, b = 0, i = 0, c1 = 0, c3 = 0;
     for (; i + V <= n && b + V <= cap; i += V) {
@@ -1981,7 +2014,6 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
     }
     K    m       = static_cast<K>(fold_mask<T>(vmask));
     bool unknown = fold_mask<T>(vbad) != 0;
-    const K k0 = KT::radix_key(src[0], 0);
     while (i < n) {
         const size_t end = std::min(n, i + (cap - b));
         if (end == i) break;
@@ -1998,6 +2030,18 @@ BRAINSORT_TARGET_AVX2 inline bool split2_avx2(A a, A buf, size_t n, size_t cap,
             w += 1 - g;
             b += g;
         }
+    }
+    // The buffer is full: the rest still fits while it is kept, as in the
+    // scalar split, which overflows only on a buffered element.
+    for (; i < n; ++i) {
+        const T e = src[i];
+        const K k = KT::radix_key(e, 0);
+        if (k >= t2) break;
+        m |= k ^ k0;
+        unknown |= (k != vk[0]) & (k != vk[1]) & (k != vk[2]) & (k != vk[3]);
+        c1 += k < t1;
+        c3 += k < t3;
+        pa[w++] = e;
     }
     xm    = m;
     known = !unknown;

@@ -14,6 +14,7 @@ option(BRAINSORT_BUILD_BENCHMARK "Build the sortbench benchmark and its test sui
 option(BRAINSORT_BUILD_FUZZERS   "Build the libFuzzer targets (Clang only)"                  OFF)
 option(SORTBENCH_NATIVE          "Compile with -march=native"                                OFF)
 set(BRAINSORT_SANITIZE "" CACHE STRING "Sanitizers for every target, e.g. address,undefined or thread (GCC/Clang)")
+option(BRAINSORT_HARDENED_STDLIB "Standard library assertions: _GLIBCXX_ASSERTIONS and libc++ debug hardening (GCC/Clang)" OFF)
 
 # ---- the library: header-only ------------------------------------------------------
 add_library(brainsort INTERFACE)
@@ -51,6 +52,11 @@ if(BRAINSORT_SANITIZE)
     target_compile_options(brainsort_flags INTERFACE -fsanitize=${BRAINSORT_SANITIZE} -fno-omit-frame-pointer -g)
     target_link_options(brainsort_flags INTERFACE -fsanitize=${BRAINSORT_SANITIZE})
   endif()
+endif()
+# The standard library's own checks (bounds, iterators, preconditions) next
+# to the sanitizers: the library's tails go through std algorithms too.
+if(BRAINSORT_HARDENED_STDLIB AND NOT MSVC)
+  target_compile_definitions(brainsort_flags INTERFACE _GLIBCXX_ASSERTIONS=1 _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG)
 endif()
 # Tests keep their assertions: undefine NDEBUG that the Release configuration adds.
 set(BRAINSORT_ASSERTS_ON $<IF:$<CXX_COMPILER_ID:MSVC>,/UNDEBUG,-UNDEBUG>)
