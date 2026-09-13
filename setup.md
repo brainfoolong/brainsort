@@ -304,15 +304,22 @@ website is assembled from the platform jobs' uploads.
 
 ### Releasing
 
-Both libraries carry one version: `BRAINSORT_VERSION` in
-`include/brainsort/detail/config.hpp` and `version` in
-`rust/brainsort/Cargo.toml` must agree. To release:
+Both libraries carry one version, in nine places (the C++ header's string
+and numeric macros, the crate, the two crates that depend on it, the lock
+file, the README, this file, the single header) plus the changelog.
+`scripts/version.py` sets them all at once and `--check`, a CTest and the
+first step of the release workflow, fails when any of them disagrees. To
+release:
 
-1. Bump both versions, add the entry to `rust/brainsort/CHANGELOG.md`,
-   regenerate the single header (`python3 scripts/amalgamate.py`), commit.
-2. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`.
+1. Keep the changes under `## Unreleased` in `rust/brainsort/CHANGELOG.md`
+   as they land. Then `python3 scripts/version.py 0.4.0`: every location is
+   set, the unreleased section becomes the version's, the single header
+   and the lock file are regenerated. Write the version's summary line
+   under the new heading if you want one, and commit.
+2. Wait for CI to be green on that commit, then tag it and push the tag:
+   `git tag v0.4.0 && git push origin v0.4.0`.
 3. [release.yml](.github/workflows/release.yml) checks that the tag and
-   both versions agree, runs the C++ and Rust test suites and the golden
+   every location agree, runs the C++ and Rust test suites and the golden
    equivalence, publishes the crate on crates.io and creates the GitHub
    release with `brainsort-<version>.hpp`, a source archive and checksums.
    `workflow_dispatch` with `dry_run` runs everything but the two

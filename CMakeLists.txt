@@ -88,6 +88,9 @@ if(BRAINSORT_BUILD_TESTS)
   if(Python3_Interpreter_FOUND)
     add_test(NAME brainsort_single_header_current
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/amalgamate.py --check)
+    # Every place that carries the version agrees (scripts/version.py sets them all).
+    add_test(NAME brainsort_version_consistent
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.py --check)
   endif()
 
   # The fuzz target as a plain test: a few thousand random inputs.

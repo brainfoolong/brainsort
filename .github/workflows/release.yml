@@ -1,8 +1,8 @@
 name: Release
 
-# One tag releases both libraries. Pushing `vX.Y.Z` (the version in
-# include/brainsort/detail/config.hpp and in rust/brainsort/Cargo.toml, which
-# are kept equal) verifies the versions, runs the two test suites once more,
+# One tag releases both libraries. Pushing `vX.Y.Z` (the version that
+# scripts/version.py sets in every place that carries it) verifies the
+# versions, runs the two test suites once more,
 # publishes the crate on crates.io and creates the GitHub release with the
 # single-header C++ library attached.
 #
@@ -36,14 +36,11 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - name: The tag, the C++ header and the crate agree on the version
+      - name: Every location agrees on the version, and the tag with them
         id: v
         run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then python3 scripts/version.py --check --tag "$GITHUB_REF_NAME"; else python3 scripts/version.py --check; fi
           cpp=$(sed -n 's/^#define BRAINSORT_VERSION "\(.*\)"/\1/p' include/brainsort/detail/config.hpp)
-          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/brainsort/Cargo.toml | head -1)
-          echo "C++ $cpp, crate $crate, ref $GITHUB_REF_NAME"
-          if [ "$cpp" != "$crate" ]; then echo "::error::version mismatch between config.hpp and Cargo.toml"; exit 1; fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "v$cpp" != "$GITHUB_REF_NAME" ]; then echo "::error::tag $GITHUB_REF_NAME does not match version $cpp"; exit 1; fi
           echo "version=$cpp" >> "$GITHUB_OUTPUT"
       - name: Install build tools
         run: |
