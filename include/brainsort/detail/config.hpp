@@ -15,9 +15,9 @@
 #include <cstdint>
 
 #define BRAINSORT_VERSION_MAJOR 0
-#define BRAINSORT_VERSION_MINOR 4
+#define BRAINSORT_VERSION_MINOR 5
 #define BRAINSORT_VERSION_PATCH 0
-#define BRAINSORT_VERSION "0.4.0"
+#define BRAINSORT_VERSION "0.5.0"
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(BRAINSORT_NO_SIMD)
 #define BRAINSORT_X86_64 1

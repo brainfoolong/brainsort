@@ -319,7 +319,7 @@ release:
    and the lock file are regenerated. Write the version's summary line
    under the new heading if you want one, and commit.
 2. Wait for CI to be green on that commit, then tag it and push the tag:
-   `git tag v0.4.0 && git push origin v0.4.0`.
+   `git tag v0.5.0 && git push origin v0.4.0`.
 3. [release.yml](.github/workflows/release.yml) checks that the tag and
    every location agree, runs the C++ and Rust test suites and the golden
    equivalence, publishes the crate on crates.io and creates the GitHub

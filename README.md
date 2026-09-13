@@ -8,7 +8,7 @@ A stable sorting algorithm for keys that map to an ordered integer: numbers,
 strings, dates, ids. It avoids comparing keys wherever the key type allows it
 and does less work when the input already has structure. A header-only C++20
 library and a Rust crate that run the same algorithm, MIT licensed, version
-0.4.0.
+0.5.0.
 
 **All results, on one page: [brainfoolong.github.io/brainsort](https://brainfoolong.github.io/brainsort/).**
 Every algorithm, key type, input pattern and size; the deterministic work

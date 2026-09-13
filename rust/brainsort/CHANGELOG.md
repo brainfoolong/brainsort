@@ -4,7 +4,7 @@ The crate follows the version of the C++ library: one number, one
 algorithm. Notable changes per version; the format is
 [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 0.5.0
 
 - `sort_by` merges long natural runs before the standard library's stable
   sort gets the slice: the run half of the C++ comparator sort, ported
