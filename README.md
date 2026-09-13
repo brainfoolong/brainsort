@@ -44,9 +44,10 @@ anything move-assignable: they are permuted once, after the keys were sorted.
 Three things to know: it uses memory (about 1.5 small records per element
 while sorting, plus one element per element for the final permutation of
 plain structs, and it keeps up to 32 MiB of freed blocks for the next call);
-an arbitrary comparator gets a comparison sort (the library's own stable
-merge sort, about 1.6x faster than `std::stable_sort`, but without the radix
-wins); and a range of 2^32 elements or more goes to `std::stable_sort`. The
+an arbitrary comparator gets a comparison sort (the library's own, stable,
+about 2x faster than `std::stable_sort` on random input and up to 4x on
+input with few distinct values or long runs, but without the radix wins);
+and a range of 2^32 elements or more goes to `std::stable_sort`. The
 whole contract is under [The library](#the-library).
 
 **Rust.** `cargo add brainsort`. No dependencies, `no_std` + `alloc`, Rust
@@ -183,8 +184,8 @@ path for an allocator reason recorded in
 measured and rejected are in [docs/decisions/0002.md](docs/decisions/0002.md),
 the scatter beyond the cache and the memory cache in
 [docs/decisions/0005.md](docs/decisions/0005.md), the handling of ordered
-input on the elements and the comparator sort in
-[docs/decisions/0006.md](docs/decisions/0006.md).
+input on the elements in [docs/decisions/0006.md](docs/decisions/0006.md),
+the comparator sort in [docs/decisions/0011.md](docs/decisions/0011.md).
 
 ## The library
 
@@ -231,11 +232,15 @@ chunk. Plain integers and doubles are written back directly; nearly sorted
 large elements are permuted by following cycles, which moves only the
 elements that are out of place.
 
-A comparator gets the library's stable merge sort (the same pass over the
-elements first, then runs of 16 merged bottom-up between the array and a
-buffer of the same size, the merge selecting instead of branching, two
-merges advancing together). It runs on trivially copyable elements behind a
-contiguous iterator; other elements go to `std::stable_sort`.
+A comparator gets the library's stable comparison sort (the same pass over
+the elements first; then long natural runs are merged as they are, and
+anything else is partitioned through a buffer, stable and without a branch,
+with the elements equal to a repeated pivot stripped off in one pass, down
+to ranges of 512 that are merge sorted from branch-free sorts of sixteen).
+Elements of up to 16 bytes are sorted in place; larger ones through an
+index array and one permutation at the end. It runs on trivially copyable
+elements behind a contiguous iterator; other elements go to
+`std::stable_sort`.
 
 ### Key types
 
@@ -260,7 +265,8 @@ A comparator that is not expressible as a key goes to `std::stable_sort`.
   64 KiB (about 400 KiB for a part that is scattered beyond the cache).
   Trivially copyable elements are permuted through a buffer of n elements,
   other elements in place with moves; a comparator sort uses a buffer of n
-  elements. Sorting 10 million `int32_t` takes about 120 MB beside the 40 MB
+  elements, and for elements larger than 16 bytes two index arrays of 4n
+  bytes plus that buffer for the final permutation. Sorting 10 million `int32_t` takes about 120 MB beside the 40 MB
   array. Sorted and reversed input, and nearly sorted small elements, need
   no memory beyond the displaced elements.
 - **Memory is kept.** Freed blocks of 64 KiB and more are kept, up to 32 MiB

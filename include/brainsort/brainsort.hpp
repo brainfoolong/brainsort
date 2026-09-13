@@ -610,10 +610,82 @@ inline void sort_by_key_impl(It first, It last, Proj proj) {
     std::stable_sort(first, last, less);
 }
 
+// A comparator on the elements an index array points to: the three-way
+// order the displaced-element route wants, and the plain `less` the
+// comparison sort wants.
+template <class T, class Comp>
+struct IndexOrder {
+    const T* p;
+    Comp*    comp;
+    int  operator()(uint32_t a, uint32_t b) const { return (*comp)(p[b], p[a]) ? 1 : ((*comp)(p[a], p[b]) ? -1 : 0); }
+};
+template <class T, class Comp>
+struct IndexLess {
+    const T* p;
+    Comp*    comp;
+    bool operator()(uint32_t a, uint32_t b) const { return (*comp)(p[a], p[b]); }
+};
+
+// Apply the permutation idx describes: out[i] = in[idx[i]]. When the input
+// was nearly sorted most elements are already in place, and the cycle walk
+// moves only the others; otherwise through a gather buffer, with the cycle
+// walk as the fallback when it cannot be allocated.
+template <class Alloc, class T>
+inline void permute_indices(T* p, uint32_t* idx, size_t n, bool sparse) {
+    auto cycles = [&] {
+        for (size_t i = 0; i < n; ++i) {
+            if (idx[i] == i) continue;
+            const T tmp = p[i];
+            size_t  j   = i;
+            for (;;) {
+                const size_t k = idx[j];
+                idx[j] = static_cast<uint32_t>(j);
+                if (k == i) { p[j] = tmp; break; }
+                p[j] = p[k];
+                j    = k;
+            }
+        }
+    };
+    if (sparse) {
+        size_t moved = 0;
+        for (size_t i = 0; i < n; ++i) moved += idx[i] != i;
+        if (moved <= n / 8) { cycles(); return; }
+    }
+    try {
+        Buf<T, Alloc> tmp(n);
+        T* t = tmp.data();
+        for (size_t i = 0; i < n; ++i) t[i] = p[idx[i]];
+        std::memcpy(static_cast<void*>(p), t, n * sizeof(T));
+        return;
+    } catch (const std::bad_alloc&) {
+    }
+    cycles();
+}
+
+// The comparator sort of elements larger than kElementRouteMax bytes: the
+// indices 0..n-1 are sorted by the order of the elements they point to (the
+// displaced-element route when the input is nearly sorted, the comparison
+// sort otherwise), and the elements are permuted once at the end. The
+// passes move 4-byte indices instead of the elements, and a comparator
+// that throws leaves the elements untouched.
+template <class Alloc, class T, class Comp>
+inline void sort_with_indices(T* p, size_t n, Comp& comp, bool nearly) {
+    Buf<uint32_t, Alloc> idx(n);
+    uint32_t* const i = idx.data();
+    for (size_t k = 0; k < n; ++k) i[k] = static_cast<uint32_t>(k);
+    if (!nearly || !sort_displaced_elements<Alloc>(i, n, IndexOrder<T, Comp>{p, &comp})) {
+        IndexLess<T, Comp> less{p, &comp};
+        stable_comparison_sort<Alloc>(i, n, less);
+    }
+    permute_indices<Alloc>(p, i, n, nearly);
+}
+
 // The comparator overloads: sorted, reversed and nearly sorted input are
 // handled on the elements like the key overloads do, everything else goes to
-// the merge sort of detail/compsort.hpp. Elements that are not trivially
-// copyable, or not behind a contiguous iterator, go to std::stable_sort.
+// the comparison sort of detail/compsort.hpp, on the elements themselves up
+// to kElementRouteMax bytes and through an index array beyond. Elements
+// that are not trivially copyable, or not behind a contiguous iterator, go
+// to std::stable_sort.
 template <class Alloc, class It, class Comp>
 inline void sort_with_impl(It first, It last, Comp comp) {
     using T = std::iter_value_t<It>;
@@ -628,10 +700,17 @@ inline void sort_with_impl(It first, It last, Comp comp) {
         const Prescan s = prescan_comp(first, n, comp);
         if (s.shape == Shape::sorted) return;
         if (s.shape == Shape::reversed) { reverse_stable_comp(first, n, comp, s); return; }
-        if (s.shape == Shape::nearly_sorted && sort_displaced_elements<Alloc>(first, n, CompOrder<T, Comp>{&comp})) return;
+        const bool nearly = s.shape == Shape::nearly_sorted;
         try {
-            stable_merge_sort<Alloc>(p, n, comp);
-            return;
+            if constexpr (sizeof(T) <= kElementRouteMax) {
+                if (nearly && sort_displaced_elements<Alloc>(first, n, CompOrder<T, Comp>{&comp})) return;
+                stable_comparison_sort<Alloc>(p, n, comp);
+                return;
+            } else {
+                if (n <= 0xFFFFFFFFull) { sort_with_indices<Alloc>(p, n, comp, nearly); return; }
+                stable_comparison_sort<Alloc>(p, n, comp);
+                return;
+            }
         } catch (const std::bad_alloc&) {
         }
     }
