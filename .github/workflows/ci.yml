@@ -14,13 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 # Every platform job builds, runs the test suite, then runs the benchmark on
-# the same binaries and uploads its results. The last job collects every
+# the same binaries and uploads its results; the Rust port runs its own
+# workflow (rust.yml) as one job of this run. The last job collects every
 # platform's results plus the deterministic counts and builds the website
 # from them, which a push to main publishes on GitHub Pages. Nothing is
 # measured twice: the website is assembled from what the platform jobs
 # produced.
 env:
-  BENCH_REPS: 11   # per cell at 100,000 elements on the shared runners (21 on a quiet machine)
+  BENCH_REPS: 5   # timed repetitions per cell at 100,000 elements: the timing is indicative, the deterministic counts are the measurement
 
 jobs:
   linux-gcc:
@@ -51,7 +52,7 @@ jobs:
           BENCH_ID: linux-x86-64-gcc13
           BENCH_HOST: GitHub Actions ubuntu-24.04, shared runner
           BENCH_NO_SITE: 1
-        run: sh scripts/bench.sh --reps $BENCH_REPS
+        run: sh scripts/bench.sh
       - name: Upload results
         if: matrix.gcc == 13
         uses: actions/upload-artifact@v7
@@ -81,7 +82,7 @@ jobs:
           BENCH_ID: linux-x86-64-clang
           BENCH_HOST: GitHub Actions ubuntu-24.04, shared runner
           BENCH_NO_SITE: 1
-        run: sh scripts/bench.sh --reps $BENCH_REPS
+        run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
@@ -110,7 +111,7 @@ jobs:
           BENCH_ID: linux-arm64-gcc
           BENCH_HOST: GitHub Actions ubuntu-24.04-arm, shared runner
           BENCH_NO_SITE: 1
-        run: sh scripts/bench.sh --reps $BENCH_REPS
+        run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
@@ -137,7 +138,7 @@ jobs:
           BENCH_ID: macos-arm64-appleclang
           BENCH_HOST: GitHub Actions macos-latest, shared runner
           BENCH_NO_SITE: 1
-        run: sh scripts/bench.sh --reps $BENCH_REPS
+        run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
@@ -162,7 +163,7 @@ jobs:
           BENCH_ID: windows-x86-64-msvc
           BENCH_HOST: GitHub Actions windows-latest, shared runner
           BENCH_NO_SITE: 1
-        run: .\scripts\bench.ps1 --reps $env:BENCH_REPS
+        run: .\scripts\bench.ps1
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
@@ -195,7 +196,7 @@ jobs:
           BENCH_ID: windows-x86-64-mingw
           BENCH_HOST: GitHub Actions windows-latest, MSYS2 UCRT64, shared runner
           BENCH_NO_SITE: 1
-        run: sh scripts/bench.sh --reps $BENCH_REPS
+        run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
@@ -268,11 +269,19 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # The Rust port: its own workflow, run as part of this one so the website
+  # job below can collect its benchmark results.
+  rust:
+    name: Rust
+    uses: ./.github/workflows/rust.yml
+    permissions:
+      contents: read
+
   # The website: every platform's results, the deterministic counts and the
   # committed workstation results in results/, rendered into one page.
   site:
     name: Website
-    needs: [linux-gcc, linux-clang, linux-arm64, macos-arm64, windows-msvc, windows-mingw]
+    needs: [linux-gcc, linux-clang, linux-arm64, macos-arm64, windows-msvc, windows-mingw, rust]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:

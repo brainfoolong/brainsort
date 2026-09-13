@@ -1,0 +1,117 @@
+name: Release
+
+# One tag releases both libraries. Pushing `vX.Y.Z` (the version in
+# include/brainsort/detail/config.hpp and in rust/brainsort/Cargo.toml, which
+# are kept equal) verifies the versions, runs the two test suites once more,
+# publishes the crate on crates.io and creates the GitHub release with the
+# single-header C++ library attached.
+#
+# crates.io authentication: Trusted Publishing (OIDC) once it is configured
+# for this repository and workflow on crates.io (Settings of the crate ->
+# Trusted Publishing: repository owner, name and workflow file
+# `release.yml`); the very first version of a crate must be published with a
+# token, so the job falls back to the repository secret CARGO_REGISTRY_TOKEN
+# when the OIDC exchange is not available. Never put a token in the tree.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run everything but do not publish or create the release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Versions and tests
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag, the C++ header and the crate agree on the version
+        id: v
+        run: |
+          cpp=$(sed -n 's/^#define BRAINSORT_VERSION "\(.*\)"/\1/p' include/brainsort/detail/config.hpp)
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/brainsort/Cargo.toml | head -1)
+          echo "C++ $cpp, crate $crate, ref $GITHUB_REF_NAME"
+          if [ "$cpp" != "$crate" ]; then echo "::error::version mismatch between config.hpp and Cargo.toml"; exit 1; fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "v$cpp" != "$GITHUB_REF_NAME" ]; then echo "::error::tag $GITHUB_REF_NAME does not match version $cpp"; exit 1; fi
+          echo "version=$cpp" >> "$GITHUB_OUTPUT"
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build g++-13
+      - name: C++ tests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: The single header is current
+        run: python3 scripts/amalgamate.py --check
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust tests and golden equivalence
+        working-directory: rust
+        run: |
+          cargo test --workspace --all-features
+          cargo run --release -p brainsort-bench -- --golden --max-n 100000
+      - name: Package the crate
+        working-directory: rust
+        run: cargo publish -p brainsort --dry-run
+
+  crate:
+    name: Publish the crate on crates.io
+    needs: verify
+    if: github.event_name == 'push' || inputs.dry_run == false
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Token from crates.io (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+        continue-on-error: true
+      - name: cargo publish
+        working-directory: rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::no crates.io credentials: configure Trusted Publishing for this workflow on crates.io, or set the CARGO_REGISTRY_TOKEN secret for the first release"
+            exit 1
+          fi
+          cargo publish -p brainsort
+
+  cpp:
+    name: GitHub release with the single header
+    needs: verify
+    if: github.event_name == 'push' || inputs.dry_run == false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Assemble the release files
+        run: |
+          v=${{ needs.verify.outputs.version }}
+          mkdir -p dist
+          cp single_include/brainsort.hpp dist/brainsort-$v.hpp
+          git archive --format=tar.gz --prefix=brainsort-$v/ -o dist/brainsort-$v-src.tar.gz HEAD include single_include LICENSE README.md docs/usage-cpp.md
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ needs.verify.outputs.version }}
+          gh release create "v$v" dist/* --title "brainsort $v" --generate-notes --notes "C++: copy \`brainsort-$v.hpp\` into your project (single header, C++20). Rust: \`cargo add brainsort@$v\`. Both libraries run the same algorithm; the Rust port is held to the C++ golden numbers."

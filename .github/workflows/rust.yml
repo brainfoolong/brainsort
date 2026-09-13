@@ -1,0 +1,230 @@
+name: Rust
+
+# The Rust port: called from ci.yml as one job of the same run (so the
+# website job can collect its benchmark results), and runnable on its own.
+# Every job works in rust/.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: rust
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt, clippy, docs, MSRV, no_std, package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Docs (nightly, as docs.rs builds them)
+        env:
+          RUSTDOCFLAGS: -D warnings --cfg docsrs
+        run: cargo +nightly doc -p brainsort --no-deps --all-features
+      - name: MSRV (Rust 1.86)
+        run: cargo +1.86.0 check -p brainsort --all-features --all-targets
+      - name: no_std (thumbv7em-none-eabi, no default features)
+        run: cargo check -p brainsort --no-default-features --target thumbv7em-none-eabi
+      - name: Package contents
+        run: |
+          cargo package -p brainsort --list --allow-dirty
+          cargo publish -p brainsort --dry-run --allow-dirty
+
+  test:
+    name: test ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Linux x86-64 stable", os: ubuntu-24.04, toolchain: stable }
+          - { name: "Linux x86-64 beta", os: ubuntu-24.04, toolchain: beta }
+          - { name: "Linux ARM64", os: ubuntu-24.04-arm, toolchain: stable }
+          - { name: "macOS ARM64", os: macos-latest, toolchain: stable }
+          - { name: "Windows MSVC", os: windows-latest, toolchain: stable }
+          - { name: "Windows GNU", os: windows-latest, toolchain: stable, target: x86_64-pc-windows-gnu }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.name }}
+      - name: Test (every feature)
+        run: cargo test --workspace --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Test the library without default features (no_std + alloc)
+        run: cargo test -p brainsort --no-default-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Test the scalar code (--cfg brainsort_no_simd)
+        if: runner.arch == 'X64'
+        env:
+          RUSTFLAGS: --cfg brainsort_no_simd
+        run: cargo test -p brainsort --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Test with AVX2 and BMI2 enabled at compile time
+        if: runner.arch == 'X64'
+        env:
+          RUSTFLAGS: -C target-feature=+avx2,+bmi2
+        run: cargo test -p brainsort --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Large inputs (release, ten million elements)
+        if: matrix.name == 'Linux x86-64 stable'
+        run: cargo test -p brainsort --release --test api -- --ignored large_inputs
+
+  i686:
+    name: Linux i686 (32-bit, scalar paths)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install a 32-bit C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-multilib
+      - name: Test
+        run: cargo test -p brainsort --all-features --target i686-unknown-linux-gnu
+
+  golden:
+    name: Golden equivalence with the C++ (results/counts.csv)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Recompute every brainsort row through the Rust port's counted view
+        run: cargo run --release -p brainsort-bench -- --golden --max-n 1000000
+
+  miri:
+    name: Miri (scalar build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Miri
+        env:
+          RUSTFLAGS: --cfg brainsort_no_simd
+          MIRIFLAGS: -Zmiri-strict-provenance
+          BRAINSORT_TEST_QUICK: 1
+        run: cargo miri test -p brainsort --all-features --lib --test fuzz_smoke --test alloc_failure --test panic_safety
+
+  sanitizer:
+    name: AddressSanitizer (vector build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Test under ASan
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          RUSTDOCFLAGS: -Zsanitizer=address
+          BRAINSORT_TEST_QUICK: 1
+        run: cargo test -p brainsort --all-features --target x86_64-unknown-linux-gnu -Zbuild-std
+
+  fuzz:
+    name: libFuzzer (three minutes)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/brainsort/fuzz
+      - name: Fuzz
+        working-directory: rust/brainsort
+        run: cargo fuzz run sort -- -max_total_time=180 -max_len=8192 -print_final_stats=1
+
+  deny:
+    name: cargo-deny (licenses, advisories, bans)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/Cargo.toml
+          command: check
+
+  semver:
+    # Enabled by the repository variable BRAINSORT_CRATE_PUBLISHED once the
+    # first version is on crates.io: cargo-semver-checks needs a baseline.
+    name: cargo-semver-checks
+    if: github.event_name == 'pull_request' && vars.BRAINSORT_CRATE_PUBLISHED == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          manifest-path: rust/brainsort/Cargo.toml
+          package: brainsort
+          feature-group: default-features
+
+  # The public API against the Rust ecosystem, on the same runner types as
+  # the C++ benchmark jobs and with the same ids, so the website can pair
+  # the two languages machine by machine.
+  bench:
+    name: Benchmark ${{ matrix.id }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: linux-x86-64-gcc13, os: ubuntu-24.04, host: "GitHub Actions ubuntu-24.04, shared runner" }
+          - { id: linux-arm64-gcc, os: ubuntu-24.04-arm, host: "GitHub Actions ubuntu-24.04-arm, shared runner" }
+          - { id: macos-arm64-appleclang, os: macos-latest, host: "GitHub Actions macos-latest, shared runner" }
+          - { id: windows-x86-64-msvc, os: windows-latest, host: "GitHub Actions windows-latest, shared runner" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: bench-${{ matrix.id }}
+      - name: Benchmark
+        run: cargo run --release -p brainsort-bench -- --bench --host "${{ matrix.host }}" --out ../results/${{ matrix.id }}.rust.api.md
+      - name: Upload results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-rust-${{ matrix.id }}
+          path: results/${{ matrix.id }}.rust.api.md
+          if-no-files-found: error
