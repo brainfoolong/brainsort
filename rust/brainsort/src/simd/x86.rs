@@ -705,7 +705,8 @@ unsafe fn vnan(kind: Prescan, x: __m256i) -> bool {
 /// # Safety
 /// AVX2 is available; `p` holds `n >= 2` elements of the layout `kind`.
 #[target_feature(enable = "avx2")]
-pub unsafe fn prescan_avx2(kind: Prescan, p: *const u8, n: usize) -> PrescanResult {
+pub unsafe fn prescan_avx2<const KIND: u8>(p: *const u8, n: usize) -> PrescanResult {
+    let kind = const { Prescan::from_code(KIND) }; // a constant, so every match on it folds away
     let esz = match kind {
         Prescan::I32 | Prescan::U32 | Prescan::F32 => 4usize,
         _ => 8,

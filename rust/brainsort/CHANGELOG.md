@@ -6,6 +6,11 @@ algorithm. Notable changes per version; the format is
 
 ## Unreleased
 
+- The AVX2 prescan of plain slices takes the key kind as a compile-time
+  constant, as the C++ template does; the run-time match inside its loop
+  had cost about 1.7 times the C++ pass, which is what the sorted and
+  reversed cells of the API benchmark paid.
+
 ## 0.3.0
 
 The first release of the Rust port.

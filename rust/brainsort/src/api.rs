@@ -321,7 +321,19 @@ fn prescan<T, P: Proj<T>>(v: &[T], proj: &mut P) -> PrescanResult {
         if P::IDENTITY && <P::K as Key>::PRESCAN != Prescan::None && crate::cpu::have_avx2() {
             // SAFETY: AVX2 was detected; with IDENTITY the elements are the
             // keys, whose layout PRESCAN names.
-            return unsafe { crate::simd::x86::prescan_avx2(<P::K as Key>::PRESCAN, v.as_ptr() as *const u8, n) };
+            let (p, n) = (v.as_ptr() as *const u8, n);
+            use crate::simd::x86::prescan_avx2;
+            return unsafe {
+                match <P::K as Key>::PRESCAN {
+                    Prescan::I32 => prescan_avx2::<{ Prescan::I32.code() }>(p, n),
+                    Prescan::U32 => prescan_avx2::<{ Prescan::U32.code() }>(p, n),
+                    Prescan::I64 => prescan_avx2::<{ Prescan::I64.code() }>(p, n),
+                    Prescan::U64 => prescan_avx2::<{ Prescan::U64.code() }>(p, n),
+                    Prescan::F32 => prescan_avx2::<{ Prescan::F32.code() }>(p, n),
+                    Prescan::F64 => prescan_avx2::<{ Prescan::F64.code() }>(p, n),
+                    Prescan::None => unreachable!(),
+                }
+            };
         }
     }
     let mut r = PrescanResult::default();

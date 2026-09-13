@@ -174,6 +174,24 @@ pub enum Prescan {
     F32,
     F64,
 }
+impl Prescan {
+    /// The kind as a number, for a const generic parameter.
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+    /// The kind of a number from `code`.
+    pub const fn from_code(c: u8) -> Prescan {
+        match c {
+            1 => Prescan::I32,
+            2 => Prescan::U32,
+            3 => Prescan::I64,
+            4 => Prescan::U64,
+            5 => Prescan::F32,
+            6 => Prescan::F64,
+            _ => Prescan::None,
+        }
+    }
+}
 
 /// A sortable key.
 ///
