@@ -294,7 +294,7 @@ test suite holds every commit to them.
 | Windows MSVC | `windows-latest` | build, full CTest, benchmark |
 | Windows MinGW | `windows-latest`, MSYS2 UCRT64 | build, full CTest, benchmark |
 | Sanitizers, libFuzzer, Linux -m32 | `ubuntu-24.04`, Clang / GCC | tests only |
-| Rust | see [rust.yml](.github/workflows/rust.yml) | format, clippy, docs, MSRV, `no_std`, tests on six platforms (scalar, compile-time AVX2 and no-default-features variants, ten million elements), 32-bit, Miri, ASan, fuzzing, cargo-deny, package dry run, the golden equivalence, the API benchmark on four runners |
+| Rust | see [rust.yml](.github/workflows/rust.yml) | format, clippy, docs, MSRV, `no_std`, tests on six platforms (the scalar, compile-time AVX2 and no-default-features variants and ten million elements on the Linux runners, where the compile-bound test build is fastest), 32-bit, Miri, ASan, fuzzing, cargo-deny, package dry run, the golden equivalence, the API benchmark on four runners |
 | Website | `ubuntu-24.04` | downloads every result, builds `site/`, uploads it (and, on `main`, publishes it on GitHub Pages) |
 
 The benchmark jobs use 5 repetitions; the page labels them as shared

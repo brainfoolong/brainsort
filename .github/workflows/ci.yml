@@ -15,11 +15,12 @@ concurrency:
 
 # Every platform job builds, runs the test suite, then runs the benchmark on
 # the same binaries and uploads its results; the Rust port runs its own
-# workflow (rust.yml) as one job of this run. The last job collects every
-# platform's results plus the deterministic counts and builds the website
-# from them, which a push to main publishes on GitHub Pages. Nothing is
-# measured twice: the website is assembled from what the platform jobs
-# produced.
+# workflow (rust.yml) as one job of this run, and measures itself there
+# (BENCH_NO_RUST below keeps bench.sh from measuring it a second time on
+# the runners that have cargo). The last job collects every platform's
+# results plus the deterministic counts and builds the website from them,
+# which a push to main publishes on GitHub Pages. Nothing is measured
+# twice: the website is assembled from what the platform jobs produced.
 env:
   BENCH_REPS: 5   # timed repetitions per cell at 100,000 elements: the timing is indicative, the deterministic counts are the measurement
 
@@ -52,6 +53,7 @@ jobs:
           BENCH_ID: linux-x86-64-gcc13
           BENCH_HOST: GitHub Actions ubuntu-24.04, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: sh scripts/bench.sh
       - name: Upload results
         if: matrix.gcc == 13
@@ -82,6 +84,7 @@ jobs:
           BENCH_ID: linux-x86-64-clang
           BENCH_HOST: GitHub Actions ubuntu-24.04, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
@@ -111,6 +114,7 @@ jobs:
           BENCH_ID: linux-arm64-gcc
           BENCH_HOST: GitHub Actions ubuntu-24.04-arm, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
@@ -138,6 +142,7 @@ jobs:
           BENCH_ID: macos-arm64-appleclang
           BENCH_HOST: GitHub Actions macos-latest, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7
@@ -163,6 +168,7 @@ jobs:
           BENCH_ID: windows-x86-64-msvc
           BENCH_HOST: GitHub Actions windows-latest, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: .\scripts\bench.ps1
       - name: Upload results
         uses: actions/upload-artifact@v7
@@ -196,6 +202,7 @@ jobs:
           BENCH_ID: windows-x86-64-mingw
           BENCH_HOST: GitHub Actions windows-latest, MSYS2 UCRT64, shared runner
           BENCH_NO_SITE: 1
+          BENCH_NO_RUST: 1   # the Rust port is measured by its own job (rust.yml, bench), same runner type and id
         run: sh scripts/bench.sh
       - name: Upload results
         uses: actions/upload-artifact@v7

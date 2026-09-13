@@ -338,8 +338,9 @@ Each platform job then benchmarks the binaries it tested. The Rust port
 runs [rust.yml](.github/workflows/rust.yml) as part of the same run:
 rustfmt, clippy, docs, the minimum Rust version, a `no_std` target, the
 tests on Linux x86-64 (stable and beta, the scalar build, the compile-time
-AVX2 build, without default features, ten million elements), Linux ARM64,
-Linux 32-bit, macOS ARM64, Windows MSVC and GNU, Miri, AddressSanitizer,
+AVX2 build, without default features, ten million elements), Linux ARM64
+(also without default features), Linux 32-bit, macOS ARM64, Windows MSVC
+and GNU (the all-features build), Miri, AddressSanitizer,
 three minutes of libFuzzer, cargo-deny, the package dry run, the golden
 equivalence with the C++ counts, and the benchmark on four runners. The
 last job builds the website from every platform's results and publishes

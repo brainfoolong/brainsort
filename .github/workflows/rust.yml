@@ -52,6 +52,14 @@ jobs:
           cargo package -p brainsort --list --allow-dirty
           cargo publish -p brainsort --dry-run --allow-dirty
 
+  # The test steps are compile-bound: the tests run in under a minute, the
+  # build of the crate's test binaries takes minutes (the api test alone
+  # is most of it, see profile.test in Cargo.toml), and the variants (no
+  # default features, the scalar code, compile-time AVX2) each rebuild
+  # from scratch. The variants exercise library code, not the operating
+  # system, so the Linux runners run them (three times faster than the
+  # Windows runners, which run the all-features build only, without the
+  # doc-tests). The bench crate is built by the golden and bench jobs.
   test:
     name: test ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -59,9 +67,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "Linux x86-64 stable", os: ubuntu-24.04, toolchain: stable }
-          - { name: "Linux x86-64 beta", os: ubuntu-24.04, toolchain: beta }
-          - { name: "Linux ARM64", os: ubuntu-24.04-arm, toolchain: stable }
+          - { name: "Linux x86-64 stable", os: ubuntu-24.04, toolchain: stable, variants: true }
+          - { name: "Linux x86-64 beta", os: ubuntu-24.04, toolchain: beta, variants: true }
+          - { name: "Linux ARM64", os: ubuntu-24.04-arm, toolchain: stable, variants: true }
           - { name: "macOS ARM64", os: macos-latest, toolchain: stable }
           - { name: "Windows MSVC", os: windows-latest, toolchain: stable }
           - { name: "Windows GNU", os: windows-latest, toolchain: stable, target: x86_64-pc-windows-gnu }
@@ -76,19 +84,20 @@ jobs:
           workspaces: rust
           key: ${{ matrix.name }}
       - name: Test (every feature)
-        run: cargo test --workspace --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: cargo test -p brainsort --all-features ${{ !matrix.variants && '--tests' || '' }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
       - name: Test the library without default features (no_std + alloc)
-        run: cargo test -p brainsort --no-default-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        if: matrix.variants
+        run: cargo test -p brainsort --no-default-features
       - name: Test the scalar code (--cfg brainsort_no_simd)
-        if: runner.arch == 'X64'
+        if: matrix.variants && runner.arch == 'X64'
         env:
           RUSTFLAGS: --cfg brainsort_no_simd
-        run: cargo test -p brainsort --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: cargo test -p brainsort --all-features
       - name: Test with AVX2 and BMI2 enabled at compile time
-        if: runner.arch == 'X64'
+        if: matrix.variants && runner.arch == 'X64'
         env:
           RUSTFLAGS: -C target-feature=+avx2,+bmi2
-        run: cargo test -p brainsort --all-features ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: cargo test -p brainsort --all-features
       - name: Large inputs (release, ten million elements)
         if: matrix.name == 'Linux x86-64 stable'
         run: cargo test -p brainsort --release --test api -- --ignored large_inputs

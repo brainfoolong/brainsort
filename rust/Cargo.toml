@@ -11,5 +11,13 @@ repository = "https://github.com/brainfoolong/brainsort"
 [profile.release]
 debug = 1
 
+# The api test instantiates every route of the sort for some forty key
+# types; with debug info its LLVM IR takes rustc to 20 GB, past the 16 GB
+# of a GitHub runner (the runner is killed), and 12 GB with line tables
+# only. Without it: 8 GB and half the time. A failing assertion still
+# names its file and line; only a debugger loses the source view.
+[profile.test]
+debug = 0
+
 [profile.bench]
 debug = 1
