@@ -144,6 +144,8 @@ jobs:
   miri:
     name: Miri (scalar build)
     runs-on: ubuntu-24.04
+    # Miri interprets; a test that forgets to scale down under it runs for hours.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly

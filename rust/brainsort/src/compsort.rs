@@ -440,7 +440,9 @@ mod tests {
 
     #[test]
     fn merges_long_runs_stably_and_gives_up_on_short_ones() {
-        for n in [RUNS_MIN, RUNS_MIN + 1, 1023, 4096, 20_000, 70_000] {
+        // Miri interprets every comparison: the two large sizes are left out there.
+        let sizes: &[usize] = if cfg!(miri) { &[RUNS_MIN, RUNS_MIN + 1, 1023] } else { &[RUNS_MIN, RUNS_MIN + 1, 1023, 4096, 20_000, 70_000] };
+        for &n in sizes {
             for p in RUN_PATTERNS {
                 let mut v = pattern(p, n);
                 assert!(merge(&mut v), "{p} at {n}: made of runs");
@@ -460,14 +462,16 @@ mod tests {
         let mut v = pattern("runs", RUNS_MIN - 1);
         assert!(!merge(&mut v), "below the minimum the pass is skipped");
         assert_eq!(v, pattern("runs", RUNS_MIN - 1));
-        let mut v = pattern("reversed", 10_000);
+        let n = if cfg!(miri) { 1024 } else { 10_000 };
+        let mut v = pattern("reversed", n);
         assert!(merge(&mut v));
-        check(&v, 10_000, "reversed");
+        check(&v, n, "reversed");
     }
 
     #[test]
     fn a_comparator_that_is_not_an_order_gives_a_permutation() {
-        for n in [600usize, 5000, 30_000] {
+        let sizes: &[usize] = if cfg!(miri) { &[600, 1200] } else { &[600, 5000, 30_000] };
+        for &n in sizes {
             for p in RUN_PATTERNS {
                 for flavour in 0..3 {
                     let mut v = pattern(p, n);
@@ -504,7 +508,8 @@ mod tests {
                 a.key < b.key
             }));
             let total = calls.get();
-            let ats: Vec<usize> = (0..if cfg!(miri) { 40 } else { 300 }).chain((0..60).map(|k| total * k / 60)).chain([total - 1]).collect();
+            let (first, spread) = if cfg!(miri) { (12, 12) } else { (300, 60) };
+            let ats: Vec<usize> = (0..first).chain((0..spread).map(|k| total * k / spread)).chain([total - 1]).collect();
             for at in ats {
                 let mut v = input.clone();
                 calls.set(0);
@@ -529,7 +534,7 @@ mod tests {
     #[test]
     fn elements_with_destructors_move_once() {
         use std::rc::Rc;
-        let n = 6000;
+        let (n, panic_at) = if cfg!(miri) { (700, 300) } else { (6000, 7000) };
         let input: Vec<Rc<Tagged>> = pattern("runs", n).into_iter().map(Rc::new).collect();
         let mut v = input.clone();
         assert!(merge_natural_runs::<Rc<Tagged>, DefaultAlloc, _>(&mut v, &mut |a, b| a.key < b.key));
@@ -543,7 +548,7 @@ mod tests {
             merge_natural_runs::<Rc<Tagged>, DefaultAlloc, _>(&mut v, &mut |a, b| {
                 let c = calls.get();
                 calls.set(c + 1);
-                if c == 7000 {
+                if c == panic_at {
                     panic!("comparator failed");
                 }
                 a.key < b.key
@@ -558,7 +563,7 @@ mod tests {
         assert_eq!(max_runs(0), 33);
         assert_eq!(max_runs(320), 43);
         // r <= (j >> 5) + 33 <= max_runs(n) when the pass returns false
-        let mut v = pattern("random", 100_000);
+        let mut v = pattern("random", if cfg!(miri) { 2048 } else { 100_000 });
         assert!(!merge(&mut v));
     }
 }
