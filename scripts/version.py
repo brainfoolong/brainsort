@@ -9,11 +9,11 @@
 The locations: the C++ header (the string and the three numeric macros),
 the crate, the two crates that depend on it by version (the benchmark and
 the fuzz target), the workspace lock file, the README's version sentence,
-the release example in setup.md, and the changelog, whose "Unreleased"
-section becomes the version's. Setting a version regenerates the single
-header and refreshes the lock file. The check is a CTest and the first
-step of the release workflow; it exits 1 and names every location that
-disagrees.
+the crate README's dependency line, the release example in setup.md, and
+the changelog, whose "Unreleased" section becomes the version's. Setting
+a version regenerates the single header and refreshes the lock file. The
+check is a CTest and the first step of the release workflow; it exits 1
+and names every location that disagrees.
 """
 import pathlib
 import re
@@ -27,6 +27,7 @@ CRATE = ROOT / "rust/brainsort/Cargo.toml"
 LOCK = ROOT / "rust/Cargo.lock"
 DEPENDENTS = [ROOT / "rust/brainsort-bench/Cargo.toml", ROOT / "rust/brainsort/fuzz/Cargo.toml"]
 README = ROOT / "README.md"
+CRATE_README = ROOT / "rust/brainsort/README.md"
 SETUP = ROOT / "setup.md"
 CHANGELOG = ROOT / "rust/brainsort/CHANGELOG.md"
 
@@ -43,6 +44,7 @@ LOCATIONS = [
     ("fuzz crate, brainsort dependency", DEPENDENTS[1], re.compile(r'^brainsort = \{ path = "[^"]*", version = "(\d+\.\d+\.\d+)"', re.M), 1),
     ("workspace lock file, brainsort entry", LOCK, re.compile(r'^name = "brainsort"\nversion = "(\d+\.\d+\.\d+)"$', re.M), 1),
     ("README, the version sentence", README, re.compile(r"MIT licensed, version\s+(\d+\.\d+\.\d+)\."), 1),
+    ("crate README, the dependency line", CRATE_README, re.compile(r'^brainsort = "(\d+\.\d+\.\d+)"$', re.M), 1),
     ("setup.md, the tag example", SETUP, re.compile(r"git tag v(\d+\.\d+\.\d+) && git push origin v\d+\.\d+\.\d+"), 1),
     ("single header, the banner", SINGLE, re.compile(r"^// brainsort (\d+\.\d+\.\d+) - single-header distribution\.$", re.M), 1),
     ("single header, BRAINSORT_VERSION", SINGLE, re.compile(r'#define BRAINSORT_VERSION "(\d+\.\d+\.\d+)"'), 1),

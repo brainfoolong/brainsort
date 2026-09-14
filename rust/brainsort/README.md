@@ -14,7 +14,7 @@ every machine: [brainfoolong.github.io/brainsort](https://brainfoolong.github.io
 
 ```toml
 [dependencies]
-brainsort = "0.3"
+brainsort = "0.5.0"
 ```
 
 ```rust
